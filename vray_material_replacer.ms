@@ -279,8 +279,7 @@
 
         -- 导出核心
         fn exportDoc path includeObjs includeMaps includeParams = (
-            local ss = stringStream ""
-            local L = fn s -> ( format "%\n" s to:ss )
+            local ss = ""
 
             -- 收集所有材质（去重，按引用）
             local allRaw = getClassInstances Material
@@ -361,112 +360,112 @@
 
             -- ============ 写 Markdown ============
             -- 开头写入 AI 转换提示词（HTML 注释形式：AI 读取 MD 可见，渲染成 HTML 时自动隐藏）
-            L "<!--"
-            L "【AI 转换提示】下面这段文字是给 AI 的指令，用来把本文档转换成 HTML 可视化报告；本段可整段删除，不影响报告数据。"
-            for line in aiPromptLines do L line
-            L "-->"
+            ss += "<!--" + "\n"
+            ss += "【AI 转换提示】下面这段文字是给 AI 的指令，用来把本文档转换成 HTML 可视化报告；本段可整段删除，不影响报告数据。" + "\n"
+            ss += line + "\n"
+            ss += "-->" + "\n"
 
-            L ""
-            L "# 3ds Max 场景材质构成报告"
-            L ""
-            L "| 项目 | 值 |"
-            L "|------|----|"
-            L ( "| 生成时间 | " + (nowStr()) + " |" )
-            L ( "| 场景文件 | " + (if maxFileName != "" then (maxFilePath + maxFileName) else "（未保存的场景）") + " |" )
-            L ( "| 3ds Max 版本 | " + ((maxVersion())[1] as string) + " |" )
-            L ( "| 材质总数 | " + (nTotal as string) + " |" )
+            ss += "" + "\n"
+            ss += "# 3ds Max 场景材质构成报告" + "\n"
+            ss += "" + "\n"
+            ss += "| 项目 | 值 |" + "\n"
+            ss += "|------|----|" + "\n"
+            ss += ( "| 生成时间 | " + (nowStr()) + " |" ) + "\n"
+            ss += ( "| 场景文件 | " + (if maxFileName != "" then (maxFilePath + maxFileName) else "（未保存的场景）") + " |" ) + "\n"
+            ss += ( "| 3ds Max 版本 | " + ((maxVersion())[1] as string) + " |" ) + "\n"
+            ss += ( "| 材质总数 | " + (nTotal as string) + " |" ) + "\n"
             local objCount = 0
             for o in objects do ( if o.material != undefined do objCount += 1 )
-            L ( "| 使用材质对象数 | " + (objCount as string) + " |" )
-            L ( "| V-Ray 材质数 | " + (nVRay as string) + " |" )
-            L ""
+            ss += ( "| 使用材质对象数 | " + (objCount as string) + " |" ) + "\n"
+            ss += ( "| V-Ray 材质数 | " + (nVRay as string) + " |" ) + "\n"
+            ss += "" + "\n"
 
             -- 目录
-            L "## 目录"
-            L ""
-            L "- [材质总览](#mat-overview)"
-            L "- [材质详情](#mat-details)"
+            ss += "## 目录" + "\n"
+            ss += "" + "\n"
+            ss += "- [材质总览](#mat-overview)" + "\n"
+            ss += "- [材质详情](#mat-details)" + "\n"
             for inf in infos do
             (
-                L ( "  - [" + (inf.idx as string) + ". " + inf.dispName + " (" + inf.className + ")](#mat-" + (inf.idx as string) + ")" )
+                ss += ( "  - [" + (inf.idx as string) + ". " + inf.dispName + " (" + inf.className + ")](#mat-" + (inf.idx as string) + ")" ) + "\n"
             )
-            L ""
+            ss += "" + "\n"
 
             -- 总览表
-            L "<a id=\"mat-overview\"></a>"
-            L "## 材质总览"
-            L ""
-            L "| # | 名称 | 类型 | 使用对象数 | 子材质数 | 贴图数 | V-Ray |"
-            L "|---|------|------|-----------|---------|--------|-------|"
+            ss += "<a id=\"mat-overview\"></a>" + "\n"
+            ss += "## 材质总览" + "\n"
+            ss += "" + "\n"
+            ss += "| # | 名称 | 类型 | 使用对象数 | 子材质数 | 贴图数 | V-Ray |" + "\n"
+            ss += "|---|------|------|-----------|---------|--------|-------|" + "\n"
             for inf in infos do
             (
                 local objN = if includeObjs then (inf.objNames.count as string) else "—"
                 local subN = (inf.subIdx.count as string)
                 local mapN = (inf.maps.count as string)
                 local vTag = if inf.isVRay then "是" else "否"
-                L ( "| " + (inf.idx as string) + " | " + inf.dispName + " | " + inf.className + " | " + objN + " | " + subN + " | " + mapN + " | " + vTag + " |" )
+                ss += ( "| " + (inf.idx as string) + " | " + inf.dispName + " | " + inf.className + " | " + objN + " | " + subN + " | " + mapN + " | " + vTag + " |" ) + "\n"
             )
-            L ""
+            ss += "" + "\n"
 
             -- 详情
-            L "<a id=\"mat-details\"></a>"
-            L "## 材质详情"
-            L ""
+            ss += "<a id=\"mat-details\"></a>" + "\n"
+            ss += "## 材质详情" + "\n"
+            ss += "" + "\n"
             for inf in infos do
             (
-                L ( "<a id=\"mat-" + (inf.idx as string) + "\"></a>" )
-                L ( "### " + (inf.idx as string) + ". " + inf.dispName )
-                L ( "- **类型**：" + inf.className + (if inf.isVRay then "  （V-Ray）" else "") )
+                ss += ( "<a id=\"mat-" + (inf.idx as string) + "\"></a>" ) + "\n"
+                ss += ( "### " + (inf.idx as string) + ". " + inf.dispName ) + "\n"
+                ss += ( "- **类型**：" + inf.className + (if inf.isVRay then "  （V-Ray）" else "") ) + "\n"
                 if includeObjs do (
                     if inf.objNames.count > 0 then (
-                        L ( "- **使用对象** (" + (inf.objNames.count as string) + ")：" + (joinStr inf.objNames ", ") )
+                        ss += ( "- **使用对象** (" + (inf.objNames.count as string) + ")：" + (joinStr inf.objNames ", ") ) + "\n"
                     ) else (
-                        L "- **使用对象**：（无 / 仅存在于材质编辑器或子材质中）"
+                        ss += "- **使用对象**：（无 / 仅存在于材质编辑器或子材质中）" + "\n"
                     )
                 )
                 if inf.colors.count > 0 do (
-                    L "- **颜色参数**"
-                    L ""
-                    L "  | 属性 | 值 |"
-                    L "  |------|----|"
-                    for c in inf.colors do L ( "  | " + c[1] + " | " + c[2] + " |" )
-                    L ""
+                    ss += "- **颜色参数**" + "\n"
+                    ss += "" + "\n"
+                    ss += "  | 属性 | 值 |" + "\n"
+                    ss += "  |------|----|" + "\n"
+                    ss += ( "  | " + c[1] + " | " + c[2] + " |" ) + "\n"
+                    ss += "" + "\n"
                 )
                 if inf.nums.count > 0 do (
-                    L "- **数值参数**"
-                    L ""
-                    L "  | 属性 | 值 |"
-                    L "  |------|----|"
-                    for n in inf.nums do L ( "  | " + n[1] + " | " + n[2] + " |" )
-                    L ""
+                    ss += "- **数值参数**" + "\n"
+                    ss += "" + "\n"
+                    ss += "  | 属性 | 值 |" + "\n"
+                    ss += "  |------|----|" + "\n"
+                    ss += ( "  | " + n[1] + " | " + n[2] + " |" ) + "\n"
+                    ss += "" + "\n"
                 )
                 if includeMaps and inf.maps.count > 0 do (
-                    L ( "- **贴图** (" + (inf.maps.count as string) + ")" )
-                    L ""
-                    L "  | 槽位 | 类型 | 文件 | 启用 |"
-                    L "  |------|------|------|------|"
+                    ss += ( "- **贴图** (" + (inf.maps.count as string) + ")" ) + "\n"
+                    ss += "" + "\n"
+                    ss += "  | 槽位 | 类型 | 文件 | 启用 |" + "\n"
+                    ss += "  |------|------|------|------|" + "\n"
                     for mp in inf.maps do
                     (
                         local fnm = if mp[3] == "" then "—" else mp[3]
                         local en = if mp[4] then "是" else "否"
-                        L ( "  | " + mp[1] + " | " + mp[2] + " | " + fnm + " | " + en + " |" )
+                        ss += ( "  | " + mp[1] + " | " + mp[2] + " | " + fnm + " | " + en + " |" ) + "\n"
                     )
-                    L ""
+                    ss += "" + "\n"
                 )
                 if inf.subIdx.count > 0 do (
                     local links = ""
                     for si in inf.subIdx do ( links += "[#" + (si as string) + " " + (mats[si].name as string) + "](#mat-" + (si as string) + ")、" )
                     if links.count > 0 do links = substring links 1 (links.count - 1)  -- 去掉末尾顿号
-                    L ( "- **子材质** (" + (inf.subIdx.count as string) + ")：" + links )
+                    ss += ( "- **子材质** (" + (inf.subIdx.count as string) + ")：" + links ) + "\n"
                 )
-                L ""
-                L "---"
-                L ""
+                ss += "" + "\n"
+                ss += "---" + "\n"
+                ss += "" + "\n"
             )
 
             -- 落盘
             local f = createFile path
-            format "%" (ss as string) to:f
+            format "%" ss to:f
             close f
             true
         )
