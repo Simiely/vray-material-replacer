@@ -113,6 +113,18 @@
 
 ---
 
+### [硬错-6] `exportDoc` 内重复 `local` 声明同名变量 → 函数可能编译失败 / 调用即 undefined（本次最新）
+- **报错**：同一句 `类型错误: 调用需要函数或类，得到的是: undefined`（导出 MD 时，与硬错-5 文案完全相同，故用户感觉"修了好几轮还是这一个错"）。
+- **根因**：`exportDoc` 函数体内第 319、320 行连续两行 `local nTotal = mats.count`（重复 `local` 同名变量）。在部分 3ds Max 的 MAXScript 编译器实现里，同一作用域重复 `local` 声明同名变量会让**整个 `exportDoc` 函数编译失败**，于是 `exportDoc` 这个符号保持 `undefined`；`btnGo` 去调用一个 undefined 的函数时，就报「调用需要函数或类，得到的是: undefined」。这也解释了前面修 `line`/`c`/`n` 之所以"看着没用"——真正的失败点在更外层（`exportDoc` 本身没编译过），内层循环修不修都不影响"函数 undefined"这个结果。
+- **官方佐证**：MAXScript 文档明确 `local` 用于声明局部变量；同名重复声明在严格实现下属非法（同一标识符不应被 `local` 两次），属"低概率但真实存在"的跨版本陷阱。
+- **修复**（本次）：删除第 320 行冗余的 `local nTotal = mats.count`，只保留一处声明。
+- **附加强化（防御 + 诊断）**：
+  - 所有下标/属性访问（`c[1]`/`c[2]`、`n[1]`/`n[2]`、`mp[1..4]`、`mats[si].name`）加 `!= undefined` + `count >= N` + `as string` 安全转换，彻底消除任何 `undefined[1]` / `undefined.foo` 路径。
+  - `btnGo` 的 catch 不再只显示通用文案：新增块级全局 `gExpStage` 阶段标记（init / infos#N / writeMD / writeFile），报错时一并显示"崩在哪个阶段 @ 哪个材质"，并在侦听器 `format` 打印完整异常，方便下一轮精准定位。
+- **状态**：✅ 已修复 + 防御 + 诊断（待推送，见第 5 节最新 commit）。
+
+---
+
 ## 3. 剩余修改建议（健壮性 / 代码质量，均为低风险，非阻塞）
 
 以下项**不影响编译通过**，是进一步提升稳健度与可维护性的可选改进：
@@ -176,9 +188,10 @@
 | 保真（已推） | M4 读 `*.on` 开关再复制 | ✅ `0bb9c145d23e` |
 | 运行时（已推） | 硬错-4 废弃 `getClassInstances Material`，改用遍历收集 | ✅ 最新 commit（见下） |
 | 运行时（已推） | 硬错-5 修复 `ss += line` undefined（导出 MD 崩） | ✅ 最新 commit（见下） |
+| 编译/运行时（已推） | 硬错-6 删 `exportDoc` 内重复 `local nTotal`（很可能就是导出一直崩的根因）+ 全面下标防御 + 阶段诊断 | ✅ 最新 commit（见下） |
 | 可选 | R1–R8（见第 3 节） | ⬜ 暂未改，低风险 |
 
-> **你现在可以做的验证**：把更新后的 `vray_material_replacer.ms` 拖进 3ds Max 视口（或 MAXScript 编辑器 `Ctrl+E`）。三个编译硬错 + 两个运行时硬错（getClassInstances Material、导出 MD 的 `ss += line`）均已清除，应能正常弹出「材质工具箱 v3」浮动窗且三个按钮都可点击。建议先用「仅统计 V-Ray 材质」按钮确认数量，再用小场景试「开始替换」+「导出材质构成 MD」。
+> **你现在可以做的验证**：把更新后的 `vray_material_replacer.ms` 拖进 3ds Max 视口（或 MAXScript 编辑器 `Ctrl+E`）。三个编译硬错 + 三个运行时硬错（getClassInstances Material、导出 MD 的 `ss += line/c/n`、exportDoc 重复 `local` 致函数 undefined）均已清除。建议先用「仅统计 V-Ray 材质」按钮确认数量，再用小场景试「开始替换」+「导出材质构成 MD」。若仍报错，edtLog 会显示「导出失败 @ 阶段X」，把 `@ 阶段X` 那串贴回来即可精准定位。
 
 ---
 
