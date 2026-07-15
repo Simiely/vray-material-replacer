@@ -393,7 +393,7 @@
             -- 开头写入 AI 转换提示词（HTML 注释形式：AI 读取 MD 可见，渲染成 HTML 时自动隐藏）
             ss += "<!--" + "\n"
             ss += "【AI 转换提示】下面这段文字是给 AI 的指令，用来把本文档转换成 HTML 可视化报告；本段可整段删除，不影响报告数据。" + "\n"
-            ss += line + "\n"
+            for line in aiPromptLines do ss += line + "\n"
             ss += "-->" + "\n"
 
             ss += "" + "\n"
