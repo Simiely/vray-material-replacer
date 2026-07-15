@@ -280,7 +280,7 @@
         -- 导出核心
         fn exportDoc path includeObjs includeMaps includeParams = (
             local ss = stringStream ""
-            fn L s = ( format "%\n" s to:ss )
+            local L = fn s -> ( format "%\n" s to:ss )
 
             -- 收集所有材质（去重，按引用）
             local allRaw = getClassInstances Material
