@@ -80,7 +80,8 @@
     fn recurseMats &acc m =
     (
         if m == undefined do return undefined
-        if (findItem acc m) == 0 do append acc m
+        if (findItem acc m) != 0 do return undefined   -- 已收集过（含防环），直接返回避免无限递归
+        append acc m
         if (isProperty m #materialList) do
             for sm in m.materialList where sm != undefined do recurseMats &acc sm
         if (isProperty m #baseMtl)   and m.baseMtl   != undefined do recurseMats &acc m.baseMtl
