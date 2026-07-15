@@ -23,7 +23,7 @@
 (
     -- ===================== 共享工具函数 =====================
     local canPhysical = (try ( (PhysicalMaterial()) != undefined ) catch false)
-    local gExpStage = ""
+    global gExpStage = ""
 
     fn pad2 s = ( if s.count < 2 then ("0" + s) else s )
 
@@ -112,7 +112,7 @@
     -- ===================== AI 转换提示词（导出时写入 MD 开头） =====================
     -- 这份提示词会作为 HTML 注释写在导出 MD 的最前面，AI 读取 MD 时会一并看到。
     -- 改这里即可调整“MD -> HTML 报告”的渲染要求，无需动其它代码。
-    local aiPromptLines = #(
+    global aiPromptLines = #(
         "你是一位资深前端工程师。下面是一份从 3ds Max 导出的「场景材质构成报告」Markdown 文档。",
         "请把它转换成【单文件、可离线打开、完全自包含】的 HTML 可视化报告：HTML + CSS + JS 全部内联，不依赖任何外部库或网络请求。",
         "",
@@ -132,7 +132,7 @@
         "",
         "请直接输出完整 HTML 代码，不要省略、不要只给片段。"
     )
-    local aiPrompt = joinStr aiPromptLines "\n"
+    global aiPrompt = joinStr aiPromptLines "\n"
 
     -- 取得场景里“使用某材质的对象名”映射（在导出时调用，保证最新）
     fn buildMatObjectMap = (
@@ -153,25 +153,92 @@
     -- 材质信息结构体（仅定义一次，避免重复定义报错）
     struct MatInfo (idx, mat, dispName, className, isVRay, objNames, subIdx, maps, colors, nums)
 
-    -- 导出核心
+    -- 导出核心（自包含：所有辅助函数定义为本地 local fn，避免跨作用域解析失败）
     fn exportDoc path includeObjs includeMaps includeParams = (
+        global gExpStage
         gExpStage = "init"
+
+        -- 本地辅助函数（函数自身的 local 永远对自身可见）
+        local fn lPad2 s = ( if s.count < 2 then ("0" + s) else s )
+        local fn lCleanName s = (
+            s = s as string
+            s = substituteString s (bit.char 13) " "
+            s = substituteString s (bit.char 10) " "
+            trim s
+        )
+        local fn lJoinStr arr sep = (
+            local s = ""
+            for i = 1 to arr.count do ( s += (arr[i] as string); if i < arr.count do s += sep )
+            s
+        )
+        local fn lColorToHex c = (
+            try ( "#" + (lPad2 (bit.intAsHex c.r)) + (lPad2 (bit.intAsHex c.g)) + (lPad2 (bit.intAsHex c.b)) ) catch ( "#000000" )
+        )
+        local fn lMapFilename tm = (
+            if tm == undefined do return ""
+            local fn2 = ""
+            local clsT = try ((classof tm) as string) catch ""
+            if (clsT == "VRayBitmap" or clsT == "VRayHDRI") then (
+                try ( fn2 = tm.HDRIMapName ) catch ()
+            ) else (
+                try ( fn2 = tm.filename ) catch ()
+            )
+            if fn2 == undefined do fn2 = ""
+            fn2
+        )
+        local fn lNowStr = (
+            local t = getLocalTime()
+            local y = t[1] as string
+            local m = (if t[2] < 10 then "0" + (t[2] as string) else t[2] as string)
+            local d = (if t[3] < 10 then "0" + (t[3] as string) else t[3] as string)
+            local hh = (if t[4] < 10 then "0" + (t[4] as string) else t[4] as string)
+            local mm = (if t[5] < 10 then "0" + (t[5] as string) else t[5] as string)
+            (y + "-" + m + "-" + d + " " + hh + ":" + mm)
+        )
+        local fn lRecurseMats &acc m = (
+            if m == undefined do return undefined
+            if (findItem acc m) != 0 do return undefined
+            append acc m
+            if (isProperty m #materialList) do for sm in m.materialList where sm != undefined do lRecurseMats &acc sm
+            if (isProperty m #baseMtl)   and m.baseMtl   != undefined do lRecurseMats &acc m.baseMtl
+            if (isProperty m #frontmtl)  and m.frontmtl  != undefined do lRecurseMats &acc m.frontmtl
+            if (isProperty m #backmtl)   and m.backmtl   != undefined do lRecurseMats &acc m.backmtl
+            if (isProperty m #coatMtl)   and m.coatMtl   != undefined do lRecurseMats &acc m.coatMtl
+            if (isProperty m #coatMtl1)  and m.coatMtl1  != undefined do lRecurseMats &acc m.coatMtl1
+            if (isProperty m #coatMtl2)  and m.coatMtl2  != undefined do lRecurseMats &acc m.coatMtl2
+            if (isProperty m #blendMtl1) and m.blendMtl1 != undefined do lRecurseMats &acc m.blendMtl1
+            if (isProperty m #blendMtl2) and m.blendMtl2 != undefined do lRecurseMats &acc m.blendMtl2
+            if (isProperty m #shellMtl)  and m.shellMtl  != undefined do lRecurseMats &acc m.shellMtl
+            undefined
+        )
+        local fn lCollectAllMaterials = (
+            local result = #()
+            for o in objects do if o.material != undefined do lRecurseMats &result o.material
+            for i = 1 to meditMaterials.count do if meditMaterials[i] != undefined do lRecurseMats &result meditMaterials[i]
+            result
+        )
+        local fn lBuildMatObjectMap = (
+            local map = #()
+            for o in objects where o.material != undefined do (
+                local found = false
+                for pair in map where pair[1] == o.material do ( append pair[2] (lCleanName o.name); found = true )
+                if not found do append map #(o.material, #(lCleanName o.name))
+            )
+            map
+        )
+        local fn lGetMatObjects mtlObjMap m = (
+            for pair in mtlObjMap where pair[1] == m do return pair[2]
+            #()
+        )
+
         local ss = ""
-
-        -- 收集所有材质（去重，按引用）
         gExpStage = "collect"
-        local mats = collectAllMaterials()
+        local mats = lCollectAllMaterials()
         local nTotal = mats.count
-
-        -- 对象映射
         local objMap = #()
-        if includeObjs do ( gExpStage = "objmap"; objMap = buildMatObjectMap() )
-
-        -- 统计 V-Ray 数量
+        if includeObjs do ( gExpStage = "objmap"; objMap = lBuildMatObjectMap() )
         local nVRay = 0
         for m in mats do ( if matchPattern (classof m as string) pattern:"VRay*" do nVRay += 1 )
-
-        -- 预先为每个材质计算信息
         local infos = #()
         for i = 1 to mats.count do
         (
@@ -179,10 +246,8 @@
             local m = mats[i]
             local cls = (classof m) as string
             local isV = matchPattern cls pattern:"VRay*"
-            local dName = cleanName (try(m.name)catch(cls))
+            local dName = lCleanName (try(m.name)catch(cls))
             if dName == "" or dName == undefined do dName = cls
-
-            -- 子材质索引
             local subIdx = #()
             local nSub = (try(getNumSubMtls m)catch(0))
             for k = 1 to nSub do (
@@ -192,8 +257,6 @@
                     if idx > 0 do append subIdx idx
                 )
             )
-
-            -- 贴图槽位
             local maps = #()
             if includeMaps do (
                 local nTex = (try(getNumSubTexmaps m)catch(0))
@@ -202,14 +265,12 @@
                     if tm != undefined do (
                         local slot = (try(getSubTexmapSlotName m k)catch("slot " + (k as string)))
                         local clsM = (classof tm) as string
-                        local fnm = mapFilename tm
+                        local fnm = lMapFilename tm
                         local en = (try(tm.enabled == true)catch(false))
                         append maps #(slot, clsM, fnm, en)
                     )
                 )
             )
-
-            -- 数值 / 颜色参数（过滤掉贴图槽位 *map* 与 name，避免与贴图表重复）
             local colors = #()
             local nums = #()
             if includeParams do (
@@ -222,33 +283,27 @@
                     try ( val = getProperty m p ) catch ( continue )
                     if val == undefined do continue
                     if (classof val == Color) then (
-                        append colors #(pname, (colorToHex val))
+                        append colors #(pname, (lColorToHex val))
                     ) else if (isKindOf val Number) then (
                         append nums #(pname, (val as string))
                     )
                 )
             )
-
             local objs = #()
-            if includeObjs do objs = getMatObjects objMap m
-
+            if includeObjs do objs = lGetMatObjects objMap m
             append infos (MatInfo i m dName cls isV objs subIdx maps colors nums)
         )
-
         gExpStage = "writeMD"
-        -- ============ 写 Markdown ============
-        -- 开头写入 AI 转换提示词（HTML 注释形式：AI 读取 MD 可见，渲染成 HTML 时自动隐藏）
         ss += "<!--" + "\n"
         ss += "【AI 转换提示】下面这段文字是给 AI 的指令，用来把本文档转换成 HTML 可视化报告；本段可整段删除，不影响报告数据。" + "\n"
         for line in aiPromptLines do ss += line + "\n"
         ss += "-->" + "\n"
-
         ss += "" + "\n"
         ss += "# 3ds Max 场景材质构成报告" + "\n"
         ss += "" + "\n"
         ss += "| 项目 | 值 |" + "\n"
         ss += "|------|----|" + "\n"
-        ss += ( "| 生成时间 | " + (nowStr()) + " |" ) + "\n"
+        ss += ( "| 生成时间 | " + (lNowStr()) + " |" ) + "\n"
         ss += ( "| 场景文件 | " + (if maxFileName != "" then (maxFilePath + maxFileName) else "（未保存的场景）") + " |" ) + "\n"
         ss += ( "| 3ds Max 版本 | " + ((maxVersion())[1] as string) + " |" ) + "\n"
         ss += ( "| 材质总数 | " + (nTotal as string) + " |" ) + "\n"
@@ -257,8 +312,6 @@
         ss += ( "| 使用材质对象数 | " + (objCount as string) + " |" ) + "\n"
         ss += ( "| V-Ray 材质数 | " + (nVRay as string) + " |" ) + "\n"
         ss += "" + "\n"
-
-        -- 目录
         ss += "## 目录" + "\n"
         ss += "" + "\n"
         ss += "- [材质总览](#mat-overview)" + "\n"
@@ -268,8 +321,6 @@
             ss += ( "  - [" + (inf.idx as string) + ". " + inf.dispName + " (" + inf.className + ")](#mat-" + (inf.idx as string) + ")" ) + "\n"
         )
         ss += "" + "\n"
-
-        -- 总览表
         ss += "<a id=\"mat-overview\"></a>" + "\n"
         ss += "## 材质总览" + "\n"
         ss += "" + "\n"
@@ -284,8 +335,6 @@
             ss += ( "| " + (inf.idx as string) + " | " + inf.dispName + " | " + inf.className + " | " + objN + " | " + subN + " | " + mapN + " | " + vTag + " |" ) + "\n"
         )
         ss += "" + "\n"
-
-        -- 详情
         ss += "<a id=\"mat-details\"></a>" + "\n"
         ss += "## 材质详情" + "\n"
         ss += "" + "\n"
@@ -296,7 +345,7 @@
             ss += ( "- **类型**：" + inf.className + (if inf.isVRay then "  （V-Ray）" else "") ) + "\n"
             if includeObjs do (
                 if inf.objNames.count > 0 then (
-                    ss += ( "- **使用对象** (" + (inf.objNames.count as string) + ")：" + (joinStr inf.objNames ", ") ) + "\n"
+                    ss += ( "- **使用对象** (" + (inf.objNames.count as string) + ")：" + (lJoinStr inf.objNames ", ") ) + "\n"
                 ) else (
                     ss += "- **使用对象**：（无 / 仅存在于材质编辑器或子材质中）" + "\n"
                 )
@@ -343,24 +392,19 @@
             if inf.subIdx.count > 0 do (
                 local links = ""
                 for si in inf.subIdx do ( links += "[#" + (si as string) + " " + (mats[si].name as string) + "](#mat-" + (si as string) + ")、" )
-                if links.count > 0 do links = substring links 1 (links.count - 1)  -- 去掉末尾顿号
+                if links.count > 0 do links = substring links 1 (links.count - 1)
                 ss += ( "- **子材质** (" + (inf.subIdx.count as string) + ")：" + links ) + "\n"
             )
             ss += "" + "\n"
             ss += "---" + "\n"
             ss += "" + "\n"
         )
-
-        -- 落盘
         gExpStage = "writeFile"
         local f = createFile path
         format "%" ss to:f
         close f
         true
     )
-
-
-
 
     -- ===================== 面板一：V-Ray 材质替换 =====================
     rollout rlVRayReplace "① V-Ray 材质替换" width:340 height:470
