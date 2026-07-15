@@ -37,7 +37,8 @@
     fn mapFilename tm = (
         if tm == undefined do return ""
         local fn2 = ""
-        if (classof tm == VRayBitmap or classof tm == VRayHDRI) then (
+        local clsT = try ((classof tm) as string) catch ""
+        if (clsT == "VRayBitmap" or clsT == "VRayHDRI") then (
             try ( fn2 = tm.HDRIMapName ) catch ()
         ) else (
             try ( fn2 = tm.filename ) catch ()
@@ -60,9 +61,9 @@
     -- 清理名称（去掉换行/回车，避免破坏 Markdown）
     fn cleanName s = (
         s = s as string
-        s = substituteString s "\n" " "
-        s = substituteString s "\r" " "
-        s
+        s = substituteString s (bit.char 13) " "   -- CR
+        s = substituteString s (bit.char 10) " "   -- LF
+        trim s
     )
 
     -- 用分隔符拼接字符串数组（MaxScript 无内置 sep-join）
@@ -126,11 +127,13 @@
         checkbox     chkMaps   "保留漫反射/凹凸/透明贴图" checked:true
         checkbox     chkBitmap "把 VRayBitmap / VRayHDRI 转为 Bitmap" checked:false
         button       btnGo     "开始替换 V-Ray 材质" width:310 height:36
-        edittext     edtLog    "" width:310 height:240 readOnly:true
+        button       btnCount  "仅统计 V-Ray 材质（不替换）" width:310 height:24
+        edittext     edtLog    "" width:310 height:212 readOnly:true
 
         fn convBitmap m =
         (
-            if (classof m == VRayBitmap or classof m == VRayHDRI) then
+            local clsM = try ((classof m) as string) catch ""
+            if (clsM == "VRayBitmap" or clsM == "VRayHDRI") then
             (
                 local nb = BitmapTexture()
                 try ( nb.filename = m.HDRIMapName ) catch ()
@@ -142,8 +145,8 @@
 
         fn setPhysMap pmtl baseName val =
         (
-            try ( pmtl.(baseName + "_map") = val ) catch (
-                try ( pmtl.(baseName + "_map_map") = val ) catch ()
+            try ( setProperty pmtl (baseName + "_map") val; setProperty pmtl (baseName + "_map_enabled") true ) catch (
+                try ( setProperty pmtl (baseName + "_map_map") val; setProperty pmtl (baseName + "_map_map_enabled") true ) catch ()
             )
         )
 
@@ -152,9 +155,9 @@
             r.name = src.name
             try ( r.diffuse = src.diffuse ) catch ()
             if chkMaps.checked do (
-                try ( if src.texmap_diffuse  != undefined do ( r.diffuseMap      = convBitmap src.texmap_diffuse;  r.diffuseMapEnable  = true ) ) catch ()
-                try ( if src.texmap_bump     != undefined do ( r.bumpMap         = convBitmap src.texmap_bump;     r.bumpMapEnable     = true ) ) catch ()
-                try ( if src.texmap_opacity != undefined do ( r.opacityMap      = convBitmap src.texmap_opacity; r.opacityMapEnable = true ) ) catch ()
+                try ( if (src.texmap_diffuse != undefined and (try (src.texmap_diffuse_on == true) catch true)) do ( r.diffuseMap = convBitmap src.texmap_diffuse; r.diffuseMapEnable = true ) ) catch ()
+                try ( if (src.texmap_bump != undefined and (try (src.texmap_bump_on == true) catch true)) do ( r.bumpMap = convBitmap src.texmap_bump; r.bumpMapEnable = true ) ) catch ()
+                try ( if (src.texmap_opacity != undefined and (try (src.texmap_opacity_on == true) catch true)) do ( r.opacityMap = convBitmap src.texmap_opacity; r.opacityMapEnable = true ) ) catch ()
             )
             r
         )
@@ -201,7 +204,7 @@
                 VRayLightMtl:    ( vrLightToStandard src )
                 VRayMtlWrapper:  ( convertMaterial src.baseMtl  depth:(depth+1) )
                 VRayBlendMtl:    ( convertMaterial src.baseMtl  depth:(depth+1) )
-                VRay2SidedMtl:   ( convertMaterial src.frontmtl depth:(depth+1) )
+                VRay2SidedMtl:   ( local fm = convertMaterial src.frontmtl depth:(depth+1); try ( fm.twoSided = true ) catch (); try ( fm.two_sided = true ) catch (); fm )
                 VRayOverrideMtl: ( convertMaterial src.baseMtl  depth:(depth+1) )
                 VRayFastSSS2:    ( vrGenericToStandard src )
                 default:         ( vrGenericToStandard src )
@@ -232,6 +235,13 @@
 
             edtLog.text = ( "完成。\n\n发现 V-Ray 材质：" + nMat as string + " 个\n已全部替换为 " + (if tgt == #physical then "Physical" else "Standard") + "。\n" + (if chkBitmap.checked then "\nVRayBitmap / VRayHDRI 已一并转为 Bitmap。" else "") + "\n\n提示：替换前请确认已保存场景。" )
             gc()
+        )
+
+        on btnCount pressed do
+        (
+            local allMats  = getClassInstances Material
+            local vrayMats = for m in allMats where matchPattern (classof m as string) pattern:"VRay*" collect m
+            edtLog.text = ( "统计结果：\n\n场景材质总数：" + allMats.count as string + "\nV-Ray 材质数：" + vrayMats.count as string + "\n\n点击「开始替换」将把上述 V-Ray 材质转为 " + (if (ddlTarget.selection == 2 and canPhysical) then "Physical" else "Standard") + "。" )
         )
     )
 
@@ -475,7 +485,8 @@
             )
             catch
             (
-                edtLog.text = "导出失败，请检查输出路径是否可写（建议先保存到本机磁盘）。"
+                local errMsg = try ( getExceptionMessage() ) catch ( try ( (getCurrentException()) as string ) catch ( "未知错误" ) )
+                edtLog.text = "导出失败：" + errMsg + "\n（请检查输出路径是否可写，建议先保存到本机磁盘）"
             )
         )
     )
