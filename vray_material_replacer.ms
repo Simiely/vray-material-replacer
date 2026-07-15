@@ -23,6 +23,7 @@
 (
     -- ===================== 共享工具函数 =====================
     local canPhysical = (try ( (PhysicalMaterial()) != undefined ) catch false)
+    local gExpStage = ""
 
     fn pad2 s = ( if s.count < 2 then ("0" + s) else s )
 
@@ -311,11 +312,11 @@
 
         -- 导出核心
         fn exportDoc path includeObjs includeMaps includeParams = (
+            gExpStage = "init"
             local ss = ""
 
             -- 收集所有材质（去重，按引用）
             local mats = collectAllMaterials()
-            local nTotal = mats.count
             local nTotal = mats.count
 
             -- 对象映射
@@ -330,6 +331,7 @@
             local infos = #()
             for i = 1 to mats.count do
             (
+                gExpStage = ("infos#" + (i as string))
                 local m = mats[i]
                 local cls = (classof m) as string
                 local isV = matchPattern cls pattern:"VRay*"
@@ -389,6 +391,7 @@
                 append infos (MatInfo i m dName cls isV objs subIdx maps colors nums)
             )
 
+            gExpStage = "writeMD"
             -- ============ 写 Markdown ============
             -- 开头写入 AI 转换提示词（HTML 注释形式：AI 读取 MD 可见，渲染成 HTML 时自动隐藏）
             ss += "<!--" + "\n"
@@ -460,7 +463,9 @@
                     ss += "  | 属性 | 值 |" + "\n"
                     ss += "  |------|----|" + "\n"
                     for c in inf.colors do (
-                        ss += ( "  | " + c[1] + " | " + c[2] + " |" ) + "\n"
+                        if c != undefined and c.count >= 2 do (
+                            ss += ( "  | " + (c[1] as string) + " | " + (c[2] as string) + " |" ) + "\n"
+                        )
                     )
                     ss += "" + "\n"
                 )
@@ -470,7 +475,9 @@
                     ss += "  | 属性 | 值 |" + "\n"
                     ss += "  |------|----|" + "\n"
                     for n in inf.nums do (
-                        ss += ( "  | " + n[1] + " | " + n[2] + " |" ) + "\n"
+                        if n != undefined and n.count >= 2 do (
+                            ss += ( "  | " + (n[1] as string) + " | " + (n[2] as string) + " |" ) + "\n"
+                        )
                     )
                     ss += "" + "\n"
                 )
@@ -481,9 +488,11 @@
                     ss += "  |------|------|------|------|" + "\n"
                     for mp in inf.maps do
                     (
-                        local fnm = if mp[3] == "" then "—" else mp[3]
-                        local en = if mp[4] then "是" else "否"
-                        ss += ( "  | " + mp[1] + " | " + mp[2] + " | " + fnm + " | " + en + " |" ) + "\n"
+                        if mp != undefined and mp.count >= 4 do (
+                            local fnm = if (mp[3] as string) == "" then "—" else (mp[3] as string)
+                            local en = if mp[4] then "是" else "否"
+                            ss += ( "  | " + (mp[1] as string) + " | " + (mp[2] as string) + " | " + fnm + " | " + en + " |" ) + "\n"
+                        )
                     )
                     ss += "" + "\n"
                 )
@@ -499,6 +508,7 @@
             )
 
             -- 落盘
+            gExpStage = "writeFile"
             local f = createFile path
             format "%" ss to:f
             close f
@@ -520,7 +530,9 @@
             catch
             (
                 local errMsg = try ( getExceptionMessage() ) catch ( try ( (getCurrentException()) as string ) catch ( "未知错误" ) )
-                edtLog.text = "导出失败：" + errMsg + "\n（请检查输出路径是否可写，建议先保存到本机磁盘）"
+                local stage = try ( gExpStage as string ) catch ( "(无阶段信息)" )
+                format "[EXPORT ERROR] stage=%\n  msg=%\n" stage errMsg
+                edtLog.text = ("导出失败 @ " + stage + "：\n" + errMsg + "\n（请检查输出路径是否可写，建议先保存到本机磁盘）")
             )
         )
     )
