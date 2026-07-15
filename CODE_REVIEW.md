@@ -92,12 +92,24 @@
 - **为什么不用嵌套 fn**：`recurseMats` 若写成 `collectAllMaterials` 体内定义的 `fn` 并引用其局部数组 `result`，会重蹈硬错-2 的「外部局部变量引用」编译错。故拆成两个独立块级函数、`result` 以 `&acc` 按引用传入，自递归不触碰闭包禁区。
 - **状态**：✅ 已推送（见第 5 节最新 commit）。
 
-### [硬错-5] 导出时 undefined 调用：`ss += line`（行 396，面板二 `exportDoc`）
+### [硬错-5] 导出时 undefined 调用：批量改写 `L→ss+=` 吃掉多个单行 `for` 循环（面板二 `exportDoc`）
 - **报错**：`类型错误: 调用需要函数或类，得到的是: undefined`（导出 MD 时触发，catch 后显示「导出失败」通用提示）。
-- **根因**：原脚本此处是 `for line in aiPromptLines do L line`（把 AI 提示词逐行写入 MD）。上一轮把 `L` 调用批量重写为 `ss += ... + "\n"` 时，正则/字符串规则把 `for ... do L line` 整行当成「`L` 调用」处理，**循环前缀 `for line in aiPromptLines do` 被丢弃**，只剩一个孤行 `ss += line + "\n"`。`line` 于是变成**未定义的变量**，被当成调用目标 → 报「调用需要函数或类，得到的是: undefined」。
-- **修复**（已推送，commit 见第 5 节）：把孤行还原成带循环变量的正确写法 `for line in aiPromptLines do ss += line + "\n"`，`line` 作为循环变量重新合法。
-- **教训（可复用）**：把「`for x in arr do F x`」这类「循环 + 函数调用」整体批量改写时，必须保留 `for ... do` 前缀，否则循环变量会悬空成 undefined。后续若再做同类 `L→ss+=` 迁移，应先用 `for` 行识别、只对循环体内部 `L` 调用改写。
-- **状态**：✅ 已修复（待推送，见第 5 节最新 commit）。
+- **官方佐证**（WebSearch，davewortley《What's Bugging me?》+ Autodesk 官方 KB）：该错误主因之一是 **`X Y` 被解析为「调用函数 X、传参 Y」而 X 是 undefined**；另一类是**对 `undefined` 做属性/下标访问**（`undefined[1]`、`undefined.foo`），MAXScript 也报同一条「调用需要函数或类，得到的是: undefined」。本质都是「某个名字是 undefined，却被放在调用/下标位置」。
+- **根因**（同一类坑、共 3 处，原行 396 / 462 / 470）：原脚本导出处用 `L` 辅助函数逐行写 MD，且有**三个单行循环**——
+  - `for line in aiPromptLines do L line`
+  - `for c in inf.colors do L ( "  | " + c[1] + " | " + c[2] + " |" )`
+  - `for n in inf.nums do L ( "  | " + n[1] + " | " + n[2] + " |" )`
+
+  上一轮为去掉 `L` 嵌套 fn，把 `L` 调用批量改写成 `ss += ... + "\n"`，**改写规则把含 ` do L ` 的整行当成「`L` 调用」处理，循环前缀 `for X in Y do` 被一并丢弃**，只剩 `ss += ... c[1] ...` 这类孤行。于是 `line`/`c`/`n` 都变成未定义变量，且 `c[1]`/`n[1]` 是对 undefined 做下标访问 → 命中上面「下标访问 undefined」那条，报「调用需要函数或类，得到的是: undefined」。
+- **为什么只修 `line` 没用**：执行顺序是 396(`line`)→462(`c`)→470(`n`)。先修 `line` 让 396 通过，但执行到 462 立刻又炸，且错误文案一字不差，所以看起来「没修好」。必须三处一起修。
+- **修复**（已推送，commit 见第 5 节）：把三处循环前缀全部补回：
+  - `for line in aiPromptLines do ss += line + "\n"`
+  - `if inf.colors.count > 0 do ( ... for c in inf.colors do ( ss += ( "  | " + c[1] + " | " + c[2] + " |" ) + "\n" ) ... )`
+  - `if inf.nums.count > 0 do ( ... for n in inf.nums do ( ss += ( "  | " + n[1] + " | " + n[2] + " |" ) + "\n" ) ... )`
+
+  已 grep 全文件确认：其余下标访问（`mp[1..4]`、`(maxVersion())[1]`、`mats[si].name`）都在各自的 `for` 循环内，无悬空变量。
+- **教训（可复用，重要）**：做「`for x in arr do F x`」这类「循环 + 函数调用」的批量迁移时，**绝不能用「含 `do F` 的整行 = 函数调用」这种粗规则**。必须：(1) 先识别所有单行 `for ... do F(...)` 循环；(2) 只改写循环体里的 `F(...)` 调用，保留 `for ... do` 前缀。或改完后**专门 grep 所有 `ss += ... X[1]` 这类下标访问，确认每个 X 都有对应的 `for X in` 循环**。
+- **状态**：✅ 三处均已修复（待推送，见第 5 节最新 commit）。
 
 ---
 
