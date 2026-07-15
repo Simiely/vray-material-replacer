@@ -153,6 +153,215 @@
     -- 材质信息结构体（仅定义一次，避免重复定义报错）
     struct MatInfo (idx, mat, dispName, className, isVRay, objNames, subIdx, maps, colors, nums)
 
+    -- 导出核心
+    fn exportDoc path includeObjs includeMaps includeParams = (
+        gExpStage = "init"
+        local ss = ""
+
+        -- 收集所有材质（去重，按引用）
+        gExpStage = "collect"
+        local mats = collectAllMaterials()
+        local nTotal = mats.count
+
+        -- 对象映射
+        local objMap = #()
+        if includeObjs do ( gExpStage = "objmap"; objMap = buildMatObjectMap() )
+
+        -- 统计 V-Ray 数量
+        local nVRay = 0
+        for m in mats do ( if matchPattern (classof m as string) pattern:"VRay*" do nVRay += 1 )
+
+        -- 预先为每个材质计算信息
+        local infos = #()
+        for i = 1 to mats.count do
+        (
+            gExpStage = ("infos#" + (i as string))
+            local m = mats[i]
+            local cls = (classof m) as string
+            local isV = matchPattern cls pattern:"VRay*"
+            local dName = cleanName (try(m.name)catch(cls))
+            if dName == "" or dName == undefined do dName = cls
+
+            -- 子材质索引
+            local subIdx = #()
+            local nSub = (try(getNumSubMtls m)catch(0))
+            for k = 1 to nSub do (
+                local sm = (try(getSubMtl m k)catch(undefined))
+                if sm != undefined do (
+                    local idx = findItem mats sm
+                    if idx > 0 do append subIdx idx
+                )
+            )
+
+            -- 贴图槽位
+            local maps = #()
+            if includeMaps do (
+                local nTex = (try(getNumSubTexmaps m)catch(0))
+                for k = 1 to nTex do (
+                    local tm = (try(getSubTexmap m k)catch(undefined))
+                    if tm != undefined do (
+                        local slot = (try(getSubTexmapSlotName m k)catch("slot " + (k as string)))
+                        local clsM = (classof tm) as string
+                        local fnm = mapFilename tm
+                        local en = (try(tm.enabled == true)catch(false))
+                        append maps #(slot, clsM, fnm, en)
+                    )
+                )
+            )
+
+            -- 数值 / 颜色参数（过滤掉贴图槽位 *map* 与 name，避免与贴图表重复）
+            local colors = #()
+            local nums = #()
+            if includeParams do (
+                local props = (try(getPropNames m)catch(#()))
+                for p in props do
+                (
+                    local pname = (p as string)
+                    if (matchPattern pname pattern:"*map*") or pname == "name" do continue
+                    local val
+                    try ( val = getProperty m p ) catch ( continue )
+                    if val == undefined do continue
+                    if (classof val == Color) then (
+                        append colors #(pname, (colorToHex val))
+                    ) else if (isKindOf val Number) then (
+                        append nums #(pname, (val as string))
+                    )
+                )
+            )
+
+            local objs = #()
+            if includeObjs do objs = getMatObjects objMap m
+
+            append infos (MatInfo i m dName cls isV objs subIdx maps colors nums)
+        )
+
+        gExpStage = "writeMD"
+        -- ============ 写 Markdown ============
+        -- 开头写入 AI 转换提示词（HTML 注释形式：AI 读取 MD 可见，渲染成 HTML 时自动隐藏）
+        ss += "<!--" + "\n"
+        ss += "【AI 转换提示】下面这段文字是给 AI 的指令，用来把本文档转换成 HTML 可视化报告；本段可整段删除，不影响报告数据。" + "\n"
+        for line in aiPromptLines do ss += line + "\n"
+        ss += "-->" + "\n"
+
+        ss += "" + "\n"
+        ss += "# 3ds Max 场景材质构成报告" + "\n"
+        ss += "" + "\n"
+        ss += "| 项目 | 值 |" + "\n"
+        ss += "|------|----|" + "\n"
+        ss += ( "| 生成时间 | " + (nowStr()) + " |" ) + "\n"
+        ss += ( "| 场景文件 | " + (if maxFileName != "" then (maxFilePath + maxFileName) else "（未保存的场景）") + " |" ) + "\n"
+        ss += ( "| 3ds Max 版本 | " + ((maxVersion())[1] as string) + " |" ) + "\n"
+        ss += ( "| 材质总数 | " + (nTotal as string) + " |" ) + "\n"
+        local objCount = 0
+        for o in objects do ( if o.material != undefined do objCount += 1 )
+        ss += ( "| 使用材质对象数 | " + (objCount as string) + " |" ) + "\n"
+        ss += ( "| V-Ray 材质数 | " + (nVRay as string) + " |" ) + "\n"
+        ss += "" + "\n"
+
+        -- 目录
+        ss += "## 目录" + "\n"
+        ss += "" + "\n"
+        ss += "- [材质总览](#mat-overview)" + "\n"
+        ss += "- [材质详情](#mat-details)" + "\n"
+        for inf in infos do
+        (
+            ss += ( "  - [" + (inf.idx as string) + ". " + inf.dispName + " (" + inf.className + ")](#mat-" + (inf.idx as string) + ")" ) + "\n"
+        )
+        ss += "" + "\n"
+
+        -- 总览表
+        ss += "<a id=\"mat-overview\"></a>" + "\n"
+        ss += "## 材质总览" + "\n"
+        ss += "" + "\n"
+        ss += "| # | 名称 | 类型 | 使用对象数 | 子材质数 | 贴图数 | V-Ray |" + "\n"
+        ss += "|---|------|------|-----------|---------|--------|-------|" + "\n"
+        for inf in infos do
+        (
+            local objN = if includeObjs then (inf.objNames.count as string) else "—"
+            local subN = (inf.subIdx.count as string)
+            local mapN = (inf.maps.count as string)
+            local vTag = if inf.isVRay then "是" else "否"
+            ss += ( "| " + (inf.idx as string) + " | " + inf.dispName + " | " + inf.className + " | " + objN + " | " + subN + " | " + mapN + " | " + vTag + " |" ) + "\n"
+        )
+        ss += "" + "\n"
+
+        -- 详情
+        ss += "<a id=\"mat-details\"></a>" + "\n"
+        ss += "## 材质详情" + "\n"
+        ss += "" + "\n"
+        for inf in infos do
+        (
+            ss += ( "<a id=\"mat-" + (inf.idx as string) + "\"></a>" ) + "\n"
+            ss += ( "### " + (inf.idx as string) + ". " + inf.dispName ) + "\n"
+            ss += ( "- **类型**：" + inf.className + (if inf.isVRay then "  （V-Ray）" else "") ) + "\n"
+            if includeObjs do (
+                if inf.objNames.count > 0 then (
+                    ss += ( "- **使用对象** (" + (inf.objNames.count as string) + ")：" + (joinStr inf.objNames ", ") ) + "\n"
+                ) else (
+                    ss += "- **使用对象**：（无 / 仅存在于材质编辑器或子材质中）" + "\n"
+                )
+            )
+            if inf.colors.count > 0 do (
+                ss += "- **颜色参数**" + "\n"
+                ss += "" + "\n"
+                ss += "  | 属性 | 值 |" + "\n"
+                ss += "  |------|----|" + "\n"
+                for c in inf.colors do (
+                    if c != undefined and c.count >= 2 do (
+                        ss += ( "  | " + (c[1] as string) + " | " + (c[2] as string) + " |" ) + "\n"
+                    )
+                )
+                ss += "" + "\n"
+            )
+            if inf.nums.count > 0 do (
+                ss += "- **数值参数**" + "\n"
+                ss += "" + "\n"
+                ss += "  | 属性 | 值 |" + "\n"
+                ss += "  |------|----|" + "\n"
+                for n in inf.nums do (
+                    if n != undefined and n.count >= 2 do (
+                        ss += ( "  | " + (n[1] as string) + " | " + (n[2] as string) + " |" ) + "\n"
+                    )
+                )
+                ss += "" + "\n"
+            )
+            if includeMaps and inf.maps.count > 0 do (
+                ss += ( "- **贴图** (" + (inf.maps.count as string) + ")" ) + "\n"
+                ss += "" + "\n"
+                ss += "  | 槽位 | 类型 | 文件 | 启用 |" + "\n"
+                ss += "  |------|------|------|------|" + "\n"
+                for mp in inf.maps do
+                (
+                    if mp != undefined and mp.count >= 4 do (
+                        local fnm = if (mp[3] as string) == "" then "—" else (mp[3] as string)
+                        local en = if mp[4] then "是" else "否"
+                        ss += ( "  | " + (mp[1] as string) + " | " + (mp[2] as string) + " | " + fnm + " | " + en + " |" ) + "\n"
+                    )
+                )
+                ss += "" + "\n"
+            )
+            if inf.subIdx.count > 0 do (
+                local links = ""
+                for si in inf.subIdx do ( links += "[#" + (si as string) + " " + (mats[si].name as string) + "](#mat-" + (si as string) + ")、" )
+                if links.count > 0 do links = substring links 1 (links.count - 1)  -- 去掉末尾顿号
+                ss += ( "- **子材质** (" + (inf.subIdx.count as string) + ")：" + links ) + "\n"
+            )
+            ss += "" + "\n"
+            ss += "---" + "\n"
+            ss += "" + "\n"
+        )
+
+        -- 落盘
+        gExpStage = "writeFile"
+        local f = createFile path
+        format "%" ss to:f
+        close f
+        true
+    )
+
+
+
+
     -- ===================== 面板一：V-Ray 材质替换 =====================
     rollout rlVRayReplace "① V-Ray 材质替换" width:340 height:470
     (
@@ -225,7 +434,7 @@
             r
         )
 
-        fn convertMaterial src depth:1 =
+        fn convertMaterial src depth:1 canPhys:false =
         (
             if src == undefined do return undefined
             if depth > 12 do return (StandardMaterial())
@@ -233,12 +442,12 @@
 
             case classof src of
             (
-                VRayMtl:         ( if (ddlTarget.selection == 2 and canPhysical) then (vrMtlToPhysical src) else (vrMtlToStandard src) )
+                VRayMtl:         ( if (ddlTarget.selection == 2 and canPhys) then (vrMtlToPhysical src) else (vrMtlToStandard src) )
                 VRayLightMtl:    ( vrLightToStandard src )
-                VRayMtlWrapper:  ( convertMaterial src.baseMtl  depth:(depth+1) )
-                VRayBlendMtl:    ( convertMaterial src.baseMtl  depth:(depth+1) )
-                VRay2SidedMtl:   ( local fm = convertMaterial src.frontmtl depth:(depth+1); try ( fm.twoSided = true ) catch (); try ( fm.two_sided = true ) catch (); fm )
-                VRayOverrideMtl: ( convertMaterial src.baseMtl  depth:(depth+1) )
+                VRayMtlWrapper:  ( convertMaterial src.baseMtl  depth:(depth+1) canPhys:canPhys )
+                VRayBlendMtl:    ( convertMaterial src.baseMtl  depth:(depth+1) canPhys:canPhys )
+                VRay2SidedMtl:   ( local fm = convertMaterial src.frontmtl depth:(depth+1) canPhys:canPhys; try ( fm.twoSided = true ) catch (); try ( fm.two_sided = true ) catch (); fm )
+                VRayOverrideMtl: ( convertMaterial src.baseMtl  depth:(depth+1) canPhys:canPhys )
                 VRayFastSSS2:    ( vrGenericToStandard src )
                 default:         ( vrGenericToStandard src )
             )
@@ -255,7 +464,7 @@
             (
                 for m in vrayMats do
                 (
-                    local nm = convertMaterial m
+                    local nm = convertMaterial m canPhys:(ddlTarget.selection == 2 and canPhysical)
                     try ( replaceInstances m nm ) catch ()
                 )
 
@@ -310,210 +519,6 @@
             )
         )
 
-        -- 导出核心
-        fn exportDoc path includeObjs includeMaps includeParams = (
-            gExpStage = "init"
-            local ss = ""
-
-            -- 收集所有材质（去重，按引用）
-            local mats = collectAllMaterials()
-            local nTotal = mats.count
-
-            -- 对象映射
-            local objMap = #()
-            if includeObjs do objMap = buildMatObjectMap()
-
-            -- 统计 V-Ray 数量
-            local nVRay = 0
-            for m in mats do ( if matchPattern (classof m as string) pattern:"VRay*" do nVRay += 1 )
-
-            -- 预先为每个材质计算信息
-            local infos = #()
-            for i = 1 to mats.count do
-            (
-                gExpStage = ("infos#" + (i as string))
-                local m = mats[i]
-                local cls = (classof m) as string
-                local isV = matchPattern cls pattern:"VRay*"
-                local dName = cleanName (try(m.name)catch(cls))
-                if dName == "" or dName == undefined do dName = cls
-
-                -- 子材质索引
-                local subIdx = #()
-                local nSub = (try(getNumSubMtls m)catch(0))
-                for k = 1 to nSub do (
-                    local sm = (try(getSubMtl m k)catch(undefined))
-                    if sm != undefined do (
-                        local idx = findItem mats sm
-                        if idx > 0 do append subIdx idx
-                    )
-                )
-
-                -- 贴图槽位
-                local maps = #()
-                if includeMaps do (
-                    local nTex = (try(getNumSubTexmaps m)catch(0))
-                    for k = 1 to nTex do (
-                        local tm = (try(getSubTexmap m k)catch(undefined))
-                        if tm != undefined do (
-                            local slot = (try(getSubTexmapSlotName m k)catch("slot " + (k as string)))
-                            local clsM = (classof tm) as string
-                            local fnm = mapFilename tm
-                            local en = (try(tm.enabled == true)catch(false))
-                            append maps #(slot, clsM, fnm, en)
-                        )
-                    )
-                )
-
-                -- 数值 / 颜色参数（过滤掉贴图槽位 *map* 与 name，避免与贴图表重复）
-                local colors = #()
-                local nums = #()
-                if includeParams do (
-                    local props = (try(getPropNames m)catch(#()))
-                    for p in props do
-                    (
-                        local pname = (p as string)
-                        if (matchPattern pname pattern:"*map*") or pname == "name" do continue
-                        local val
-                        try ( val = getProperty m p ) catch ( continue )
-                        if val == undefined do continue
-                        if (classof val == Color) then (
-                            append colors #(pname, (colorToHex val))
-                        ) else if (isKindOf val Number) then (
-                            append nums #(pname, (val as string))
-                        )
-                    )
-                )
-
-                local objs = #()
-                if includeObjs do objs = getMatObjects objMap m
-
-                append infos (MatInfo i m dName cls isV objs subIdx maps colors nums)
-            )
-
-            gExpStage = "writeMD"
-            -- ============ 写 Markdown ============
-            -- 开头写入 AI 转换提示词（HTML 注释形式：AI 读取 MD 可见，渲染成 HTML 时自动隐藏）
-            ss += "<!--" + "\n"
-            ss += "【AI 转换提示】下面这段文字是给 AI 的指令，用来把本文档转换成 HTML 可视化报告；本段可整段删除，不影响报告数据。" + "\n"
-            for line in aiPromptLines do ss += line + "\n"
-            ss += "-->" + "\n"
-
-            ss += "" + "\n"
-            ss += "# 3ds Max 场景材质构成报告" + "\n"
-            ss += "" + "\n"
-            ss += "| 项目 | 值 |" + "\n"
-            ss += "|------|----|" + "\n"
-            ss += ( "| 生成时间 | " + (nowStr()) + " |" ) + "\n"
-            ss += ( "| 场景文件 | " + (if maxFileName != "" then (maxFilePath + maxFileName) else "（未保存的场景）") + " |" ) + "\n"
-            ss += ( "| 3ds Max 版本 | " + ((maxVersion())[1] as string) + " |" ) + "\n"
-            ss += ( "| 材质总数 | " + (nTotal as string) + " |" ) + "\n"
-            local objCount = 0
-            for o in objects do ( if o.material != undefined do objCount += 1 )
-            ss += ( "| 使用材质对象数 | " + (objCount as string) + " |" ) + "\n"
-            ss += ( "| V-Ray 材质数 | " + (nVRay as string) + " |" ) + "\n"
-            ss += "" + "\n"
-
-            -- 目录
-            ss += "## 目录" + "\n"
-            ss += "" + "\n"
-            ss += "- [材质总览](#mat-overview)" + "\n"
-            ss += "- [材质详情](#mat-details)" + "\n"
-            for inf in infos do
-            (
-                ss += ( "  - [" + (inf.idx as string) + ". " + inf.dispName + " (" + inf.className + ")](#mat-" + (inf.idx as string) + ")" ) + "\n"
-            )
-            ss += "" + "\n"
-
-            -- 总览表
-            ss += "<a id=\"mat-overview\"></a>" + "\n"
-            ss += "## 材质总览" + "\n"
-            ss += "" + "\n"
-            ss += "| # | 名称 | 类型 | 使用对象数 | 子材质数 | 贴图数 | V-Ray |" + "\n"
-            ss += "|---|------|------|-----------|---------|--------|-------|" + "\n"
-            for inf in infos do
-            (
-                local objN = if includeObjs then (inf.objNames.count as string) else "—"
-                local subN = (inf.subIdx.count as string)
-                local mapN = (inf.maps.count as string)
-                local vTag = if inf.isVRay then "是" else "否"
-                ss += ( "| " + (inf.idx as string) + " | " + inf.dispName + " | " + inf.className + " | " + objN + " | " + subN + " | " + mapN + " | " + vTag + " |" ) + "\n"
-            )
-            ss += "" + "\n"
-
-            -- 详情
-            ss += "<a id=\"mat-details\"></a>" + "\n"
-            ss += "## 材质详情" + "\n"
-            ss += "" + "\n"
-            for inf in infos do
-            (
-                ss += ( "<a id=\"mat-" + (inf.idx as string) + "\"></a>" ) + "\n"
-                ss += ( "### " + (inf.idx as string) + ". " + inf.dispName ) + "\n"
-                ss += ( "- **类型**：" + inf.className + (if inf.isVRay then "  （V-Ray）" else "") ) + "\n"
-                if includeObjs do (
-                    if inf.objNames.count > 0 then (
-                        ss += ( "- **使用对象** (" + (inf.objNames.count as string) + ")：" + (joinStr inf.objNames ", ") ) + "\n"
-                    ) else (
-                        ss += "- **使用对象**：（无 / 仅存在于材质编辑器或子材质中）" + "\n"
-                    )
-                )
-                if inf.colors.count > 0 do (
-                    ss += "- **颜色参数**" + "\n"
-                    ss += "" + "\n"
-                    ss += "  | 属性 | 值 |" + "\n"
-                    ss += "  |------|----|" + "\n"
-                    for c in inf.colors do (
-                        if c != undefined and c.count >= 2 do (
-                            ss += ( "  | " + (c[1] as string) + " | " + (c[2] as string) + " |" ) + "\n"
-                        )
-                    )
-                    ss += "" + "\n"
-                )
-                if inf.nums.count > 0 do (
-                    ss += "- **数值参数**" + "\n"
-                    ss += "" + "\n"
-                    ss += "  | 属性 | 值 |" + "\n"
-                    ss += "  |------|----|" + "\n"
-                    for n in inf.nums do (
-                        if n != undefined and n.count >= 2 do (
-                            ss += ( "  | " + (n[1] as string) + " | " + (n[2] as string) + " |" ) + "\n"
-                        )
-                    )
-                    ss += "" + "\n"
-                )
-                if includeMaps and inf.maps.count > 0 do (
-                    ss += ( "- **贴图** (" + (inf.maps.count as string) + ")" ) + "\n"
-                    ss += "" + "\n"
-                    ss += "  | 槽位 | 类型 | 文件 | 启用 |" + "\n"
-                    ss += "  |------|------|------|------|" + "\n"
-                    for mp in inf.maps do
-                    (
-                        if mp != undefined and mp.count >= 4 do (
-                            local fnm = if (mp[3] as string) == "" then "—" else (mp[3] as string)
-                            local en = if mp[4] then "是" else "否"
-                            ss += ( "  | " + (mp[1] as string) + " | " + (mp[2] as string) + " | " + fnm + " | " + en + " |" ) + "\n"
-                        )
-                    )
-                    ss += "" + "\n"
-                )
-                if inf.subIdx.count > 0 do (
-                    local links = ""
-                    for si in inf.subIdx do ( links += "[#" + (si as string) + " " + (mats[si].name as string) + "](#mat-" + (si as string) + ")、" )
-                    if links.count > 0 do links = substring links 1 (links.count - 1)  -- 去掉末尾顿号
-                    ss += ( "- **子材质** (" + (inf.subIdx.count as string) + ")：" + links ) + "\n"
-                )
-                ss += "" + "\n"
-                ss += "---" + "\n"
-                ss += "" + "\n"
-            )
-
-            -- 落盘
-            gExpStage = "writeFile"
-            local f = createFile path
-            format "%" ss to:f
-            close f
-            true
-        )
 
         on btnGo pressed do
         (
