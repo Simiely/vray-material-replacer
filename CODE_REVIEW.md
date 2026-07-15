@@ -85,7 +85,7 @@
 - **根因**（见 1.7）：`getClassInstances` 只接受具体 MAXClass；`Material` 是抽象基类，传进去拿到的是基类值，触发类型错误。这是**运行时错**（编译能过，点按钮才炸），原仓库在 `btnGo`/`btnCount`（面板一）和 `exportDoc`（面板二）三处都写了 `getClassInstances Material`。
 - **修复**（已推送，commit 见第 5 节）：
   1. 新增两个**块级**函数（放在外层 `( )` 块内、两个 rollout 都能调用，避开「跨 rollout 调不到成员函数」+「嵌套 fn 闭包禁区」两个坑）：
-     - `fn recurseMats &acc m`：递归遍历子材质。`&acc` 为**按引用传递**的数组（MAXScript 的 by-ref 参数），`isProperty m #materialList` 取多维子材质，再逐个探测 `baseMtl`/`frontmtl`/`backmtl`/`coatMtl`/`coatMtl1/2`/`blendMtl1/2`/`shellMtl` 等常见包裹/混合/双面子材质。用 `findItem` 去重（按引用）。
+     - `fn recurseMats &acc m`：递归遍历子材质。`&acc` 为**按引用传递**的数组（MAXScript 的 by-ref 参数），`isProperty m #materialList` 取多维子材质，再逐个探测 `baseMtl`/`frontmtl`/`backmtl`/`coatMtl`/`coatMtl1/2`/`blendMtl1/2`/`shellMtl` 等常见包裹/混合/双面子材质。用 `findItem` 去重（按引用）；**含防环守卫**：`m` 已在集合里直接 `return`，避免材质自引/A↔B 互引导致无限递归爆栈。
      - `fn collectAllMaterials =`：遍历 `objects`（取 `o.material`）+ `meditMaterials`（材质编辑器槽位），各自喂给 `recurseMats`。
   2. 三处 `getClassInstances Material` 全部改为 `collectAllMaterials()`：`btnGo`(行 248)、`btnCount`(行 273)、`exportDoc`(行 316)。
   3. 顺手把 `getClassInstances VRayBitmap`/`VRayHDRI`（仅 `chkBitmap` 勾选时跑）也用 `try` 包住，避免 V-Ray 未装、`VRayBitmap` 未定义时再次炸。
