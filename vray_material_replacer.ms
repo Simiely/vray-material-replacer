@@ -459,7 +459,9 @@
                     ss += "" + "\n"
                     ss += "  | 属性 | 值 |" + "\n"
                     ss += "  |------|----|" + "\n"
-                    ss += ( "  | " + c[1] + " | " + c[2] + " |" ) + "\n"
+                    for c in inf.colors do (
+                        ss += ( "  | " + c[1] + " | " + c[2] + " |" ) + "\n"
+                    )
                     ss += "" + "\n"
                 )
                 if inf.nums.count > 0 do (
@@ -467,7 +469,9 @@
                     ss += "" + "\n"
                     ss += "  | 属性 | 值 |" + "\n"
                     ss += "  |------|----|" + "\n"
-                    ss += ( "  | " + n[1] + " | " + n[2] + " |" ) + "\n"
+                    for n in inf.nums do (
+                        ss += ( "  | " + n[1] + " | " + n[2] + " |" ) + "\n"
+                    )
                     ss += "" + "\n"
                 )
                 if includeMaps and inf.maps.count > 0 do (
