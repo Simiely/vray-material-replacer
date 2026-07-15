@@ -8,7 +8,7 @@
 --   【面板二】导出场景所有材质的「构成」为 Markdown 文档（结构已为 AI→HTML 优化）
 --
 -- 关键修正（均已交叉验证）：
---   1) getClassInstances 收集场景【全部】材质（含多维/嵌套/编辑器槽位/环境）。
+--   1) 遍历「对象材质 + 材质编辑器槽位 + 递归子材质」收集场景【全部】材质；getClassInstances 不接受抽象基类 Material。
 --   2) replaceInstances 全局一次性替换所有引用，最稳定、不漏嵌套。
 --   3) 标准材质“启用贴图”属性是 diffuseMapEnable（非 useDiffuseMap）。
 --   4) VRayBitmap/VRayHDRI 文件名用 .HDRIMapName 读取。
@@ -74,6 +74,37 @@
             if i < arr.count do s += sep
         )
         s
+    )
+
+    -- 递归收集材质：&acc 为按引用传递的数组；遍历多维子材质与常见包裹/混合/双面子材质
+    fn recurseMats &acc m =
+    (
+        if m == undefined do return undefined
+        if (findItem acc m) == 0 do append acc m
+        if (isProperty m #materialList) do
+            for sm in m.materialList where sm != undefined do recurseMats &acc sm
+        if (isProperty m #baseMtl)   and m.baseMtl   != undefined do recurseMats &acc m.baseMtl
+        if (isProperty m #frontmtl)  and m.frontmtl  != undefined do recurseMats &acc m.frontmtl
+        if (isProperty m #backmtl)   and m.backmtl   != undefined do recurseMats &acc m.backmtl
+        if (isProperty m #coatMtl)   and m.coatMtl   != undefined do recurseMats &acc m.coatMtl
+        if (isProperty m #coatMtl1)  and m.coatMtl1  != undefined do recurseMats &acc m.coatMtl1
+        if (isProperty m #coatMtl2)  and m.coatMtl2  != undefined do recurseMats &acc m.coatMtl2
+        if (isProperty m #blendMtl1) and m.blendMtl1 != undefined do recurseMats &acc m.blendMtl1
+        if (isProperty m #blendMtl2) and m.blendMtl2 != undefined do recurseMats &acc m.blendMtl2
+        if (isProperty m #shellMtl)  and m.shellMtl  != undefined do recurseMats &acc m.shellMtl
+        undefined
+    )
+
+    -- 收集场景内全部材质（对象材质 + 材质编辑器槽位 + 递归子材质）
+    -- 不使用 getClassInstances Material：Material 是抽象基类，getClassInstances 只接受具体 MAXClass
+    fn collectAllMaterials =
+    (
+        local result = #()
+        for o in objects do
+            if o.material != undefined do recurseMats &result o.material
+        for i = 1 to meditMaterials.count do
+            if meditMaterials[i] != undefined do recurseMats &result meditMaterials[i]
+        result
     )
 
     -- ===================== AI 转换提示词（导出时写入 MD 开头） =====================
@@ -214,7 +245,7 @@
         on btnGo pressed do
         (
             local tgt = if (ddlTarget.selection == 2 and canPhysical) then #physical else #standard
-            local allMats  = getClassInstances Material
+            local allMats  = collectAllMaterials()
             local vrayMats = for m in allMats where matchPattern (classof m as string) pattern:"VRay*" collect m
             local nMat = vrayMats.count
 
@@ -228,7 +259,7 @@
 
                 if chkBitmap.checked do
                 (
-                    for b in (getClassInstances VRayBitmap) do try ( replaceInstances b (convBitmap b) ) catch ()
+                    try ( for b in (getClassInstances VRayBitmap) do replaceInstances b (convBitmap b) ) catch ()
                     try ( for h in (getClassInstances VRayHDRI)  do replaceInstances h (convBitmap h) ) catch ()
                 )
             )
@@ -239,7 +270,7 @@
 
         on btnCount pressed do
         (
-            local allMats  = getClassInstances Material
+            local allMats  = collectAllMaterials()
             local vrayMats = for m in allMats where matchPattern (classof m as string) pattern:"VRay*" collect m
             edtLog.text = ( "统计结果：\n\n场景材质总数：" + allMats.count as string + "\nV-Ray 材质数：" + vrayMats.count as string + "\n\n点击「开始替换」将把上述 V-Ray 材质转为 " + (if (ddlTarget.selection == 2 and canPhysical) then "Physical" else "Standard") + "。" )
         )
@@ -282,9 +313,8 @@
             local ss = ""
 
             -- 收集所有材质（去重，按引用）
-            local allRaw = getClassInstances Material
-            local mats = #()
-            for m in allRaw do ( if (findItem mats m) == 0 do append mats m )
+            local mats = collectAllMaterials()
+            local nTotal = mats.count
             local nTotal = mats.count
 
             -- 对象映射
