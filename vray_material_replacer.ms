@@ -22,7 +22,7 @@
 
 (
     -- ===================== 共享工具函数 =====================
-    local canPhysical = (try ( (PhysicalMaterial()) != undefined ) catch false)
+    local canPhysical = (try(PhysicalMaterial != undefined) catch false)   -- 类存在性探测（不构造实例，更轻量）
     global gExpStage = ""
 
     fn pad2 s = ( if s.count < 2 then ("0" + s) else s )
@@ -153,92 +153,17 @@
     -- 材质信息结构体（仅定义一次，避免重复定义报错）
     struct MatInfo (idx, mat, dispName, className, isVRay, objNames, subIdx, maps, colors, nums)
 
-    -- 导出核心（自包含：所有辅助函数定义为本地 local fn，避免跨作用域解析失败）
-    fn exportDoc path includeObjs includeMaps includeParams = (
+    -- ===================== 导出：三阶段拆分（收集 / 渲染 / 写盘） =====================
+    -- 拆分原则：MAXScript 无闭包，跨函数共享数据一律通过返回值 / 参数传递，
+    -- 每个 fn 只干一件事，避免大函数内主支线混编、难调试（历史 bug 多源于此）。
+
+    -- 阶段 1：收集材质信息（支线：数据准备）。返回 infos 数组（MatInfo 元素）。
+    fn buildInfos includeObjs includeMaps includeParams = (
         global gExpStage
-        gExpStage = "init"
-
-        -- 本地辅助函数（函数自身的 local 永远对自身可见）
-        local fn lPad2 s = ( if s.count < 2 then ("0" + s) else s )
-        local fn lCleanName s = (
-            s = s as string
-            s = substituteString s (bit.char 13) " "
-            s = substituteString s (bit.char 10) " "
-            trim s
-        )
-        local fn lJoinStr arr sep = (
-            local s = ""
-            for i = 1 to arr.count do ( s += (arr[i] as string); if i < arr.count do s += sep )
-            s
-        )
-        local fn lColorToHex c = (
-            try ( "#" + (lPad2 (bit.intAsHex c.r)) + (lPad2 (bit.intAsHex c.g)) + (lPad2 (bit.intAsHex c.b)) ) catch ( "#000000" )
-        )
-        local fn lMapFilename tm = (
-            if tm == undefined do return ""
-            local fn2 = ""
-            local clsT = try ((classof tm) as string) catch ""
-            if (clsT == "VRayBitmap" or clsT == "VRayHDRI") then (
-                try ( fn2 = tm.HDRIMapName ) catch ()
-            ) else (
-                try ( fn2 = tm.filename ) catch ()
-            )
-            if fn2 == undefined do fn2 = ""
-            fn2
-        )
-        local fn lNowStr = (
-            local t = getLocalTime()
-            local y = t[1] as string
-            local m = (if t[2] < 10 then "0" + (t[2] as string) else t[2] as string)
-            local d = (if t[3] < 10 then "0" + (t[3] as string) else t[3] as string)
-            local hh = (if t[4] < 10 then "0" + (t[4] as string) else t[4] as string)
-            local mm = (if t[5] < 10 then "0" + (t[5] as string) else t[5] as string)
-            (y + "-" + m + "-" + d + " " + hh + ":" + mm)
-        )
-        local fn lRecurseMats &acc m = (
-            if m == undefined do return undefined
-            if (findItem acc m) != 0 do return undefined
-            append acc m
-            if (isProperty m #materialList) do for sm in m.materialList where sm != undefined do lRecurseMats &acc sm
-            if (isProperty m #baseMtl)   and m.baseMtl   != undefined do lRecurseMats &acc m.baseMtl
-            if (isProperty m #frontmtl)  and m.frontmtl  != undefined do lRecurseMats &acc m.frontmtl
-            if (isProperty m #backmtl)   and m.backmtl   != undefined do lRecurseMats &acc m.backmtl
-            if (isProperty m #coatMtl)   and m.coatMtl   != undefined do lRecurseMats &acc m.coatMtl
-            if (isProperty m #coatMtl1)  and m.coatMtl1  != undefined do lRecurseMats &acc m.coatMtl1
-            if (isProperty m #coatMtl2)  and m.coatMtl2  != undefined do lRecurseMats &acc m.coatMtl2
-            if (isProperty m #blendMtl1) and m.blendMtl1 != undefined do lRecurseMats &acc m.blendMtl1
-            if (isProperty m #blendMtl2) and m.blendMtl2 != undefined do lRecurseMats &acc m.blendMtl2
-            if (isProperty m #shellMtl)  and m.shellMtl  != undefined do lRecurseMats &acc m.shellMtl
-            undefined
-        )
-        local fn lCollectAllMaterials = (
-            local result = #()
-            for o in objects do if o.material != undefined do lRecurseMats &result o.material
-            for i = 1 to meditMaterials.count do if meditMaterials[i] != undefined do lRecurseMats &result meditMaterials[i]
-            result
-        )
-        local fn lBuildMatObjectMap = (
-            local map = #()
-            for o in objects where o.material != undefined do (
-                local found = false
-                for pair in map where pair[1] == o.material do ( append pair[2] (lCleanName o.name); found = true )
-                if not found do append map #(o.material, #(lCleanName o.name))
-            )
-            map
-        )
-        local fn lGetMatObjects mtlObjMap m = (
-            for pair in mtlObjMap where pair[1] == m do return pair[2]
-            #()
-        )
-
-        local ss = ""
         gExpStage = "collect"
-        local mats = lCollectAllMaterials()
-        local nTotal = mats.count
+        local mats = collectAllMaterials()
         local objMap = #()
-        if includeObjs do ( gExpStage = "objmap"; objMap = lBuildMatObjectMap() )
-        local nVRay = 0
-        for m in mats do ( if matchPattern (classof m as string) pattern:"VRay*" do nVRay += 1 )
+        if includeObjs do ( gExpStage = "objmap"; objMap = buildMatObjectMap() )
         local infos = #()
         for i = 1 to mats.count do
         (
@@ -246,7 +171,7 @@
             local m = mats[i]
             local cls = (classof m) as string
             local isV = matchPattern cls pattern:"VRay*"
-            local dName = lCleanName (try(m.name)catch(cls))
+            local dName = cleanName (try(m.name)catch(cls))
             if dName == "" or dName == undefined do dName = cls
             local subIdx = #()
             local nSub = (try(getNumSubMtls m)catch(0))
@@ -265,7 +190,7 @@
                     if tm != undefined do (
                         local slot = (try(getSubTexmapSlotName m k)catch("slot " + (k as string)))
                         local clsM = (classof tm) as string
-                        local fnm = lMapFilename tm
+                        local fnm = mapFilename tm
                         local en = (try(tm.enabled == true)catch(false))
                         append maps #(slot, clsM, fnm, en)
                     )
@@ -283,17 +208,31 @@
                     try ( val = getProperty m p ) catch ( continue )
                     if val == undefined do continue
                     if (classof val == Color) then (
-                        append colors #(pname, (lColorToHex val))
+                        append colors #(pname, (colorToHex val))
                     ) else if (isKindOf val Number) then (
                         append nums #(pname, (val as string))
                     )
                 )
             )
             local objs = #()
-            if includeObjs do objs = lGetMatObjects objMap m
+            if includeObjs do objs = getMatObjects objMap m
             append infos (MatInfo i m dName cls isV objs subIdx maps colors nums)
         )
+        gExpStage = "infos_done"
+        infos
+    )
+
+    -- 阶段 2：渲染 Markdown（主线：文档生成）。返回整篇 MD 字符串。
+    fn renderMD infos includeObjs includeMaps = (
+        global gExpStage
         gExpStage = "writeMD"
+        local nTotal = infos.count
+        local nVRay = 0
+        for inf in infos do ( if inf.isVRay do nVRay += 1 )
+        local objCount = 0
+        for o in objects do ( if o.material != undefined do objCount += 1 )
+
+        local ss = ""
         ss += "<!--" + "\n"
         ss += "【AI 转换提示】下面这段文字是给 AI 的指令，用来把本文档转换成 HTML 可视化报告；本段可整段删除，不影响报告数据。" + "\n"
         for line in aiPromptLines do ss += line + "\n"
@@ -303,12 +242,10 @@
         ss += "" + "\n"
         ss += "| 项目 | 值 |" + "\n"
         ss += "|------|----|" + "\n"
-        ss += ( "| 生成时间 | " + (lNowStr()) + " |" ) + "\n"
+        ss += ( "| 生成时间 | " + (nowStr()) + " |" ) + "\n"
         ss += ( "| 场景文件 | " + (if maxFileName != "" then (maxFilePath + maxFileName) else "（未保存的场景）") + " |" ) + "\n"
         ss += ( "| 3ds Max 版本 | " + ((maxVersion())[1] as string) + " |" ) + "\n"
         ss += ( "| 材质总数 | " + (nTotal as string) + " |" ) + "\n"
-        local objCount = 0
-        for o in objects do ( if o.material != undefined do objCount += 1 )
         ss += ( "| 使用材质对象数 | " + (objCount as string) + " |" ) + "\n"
         ss += ( "| V-Ray 材质数 | " + (nVRay as string) + " |" ) + "\n"
         ss += "" + "\n"
@@ -345,7 +282,7 @@
             ss += ( "- **类型**：" + inf.className + (if inf.isVRay then "  （V-Ray）" else "") ) + "\n"
             if includeObjs do (
                 if inf.objNames.count > 0 then (
-                    ss += ( "- **使用对象** (" + (inf.objNames.count as string) + ")：" + (lJoinStr inf.objNames ", ") ) + "\n"
+                    ss += ( "- **使用对象** (" + (inf.objNames.count as string) + ")：" + (joinStr inf.objNames ", ") ) + "\n"
                 ) else (
                     ss += "- **使用对象**：（无 / 仅存在于材质编辑器或子材质中）" + "\n"
                 )
@@ -391,7 +328,7 @@
             )
             if inf.subIdx.count > 0 do (
                 local links = ""
-                for si in inf.subIdx do ( links += "[#" + (si as string) + " " + (mats[si].name as string) + "](#mat-" + (si as string) + ")、" )
+                for si in inf.subIdx do ( links += "[#" + (si as string) + " " + (infos[si].dispName as string) + "](#mat-" + (si as string) + ")、" )
                 if links.count > 0 do links = substring links 1 (links.count - 1)
                 ss += ( "- **子材质** (" + (inf.subIdx.count as string) + ")：" + links ) + "\n"
             )
@@ -399,11 +336,28 @@
             ss += "---" + "\n"
             ss += "" + "\n"
         )
+        gExpStage = "writeMD_done"
+        ss
+    )
+
+    -- 阶段 3：写盘（基础设施）。返回成功与否。
+    fn writeMDFile path content = (
+        global gExpStage
         gExpStage = "writeFile"
         local f = createFile path
-        format "%" ss to:f
+        format "%" content to:f
         close f
+        gExpStage = "done"
         true
+    )
+
+    -- 协调层（主线入口：三阶段串联，只传数据不写逻辑）
+    fn exportDoc path includeObjs includeMaps includeParams = (
+        global gExpStage
+        gExpStage = "init"
+        local infos = buildInfos includeObjs includeMaps includeParams
+        local md    = renderMD infos includeObjs includeMaps
+        writeMDFile path md
     )
 
     -- ===================== 面板一：V-Ray 材质替换 =====================
