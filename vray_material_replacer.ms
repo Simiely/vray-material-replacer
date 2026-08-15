@@ -28,10 +28,16 @@
 
     fn pad2 s = ( if s.count < 2 then ("0" + s) else s )
 
-    -- Color -> #RRGGBB（Max 的 Color 分量 r/g/b 为 0-255 整数）
+    -- 颜色 → #RRGGBB。兼容 Color / AColor / Point3（MAXScript 三类颜色值）
+    -- AColor 带 alpha（忽略）；Point3 分量常为 0-1 浮点，Color 为 0-255 整数
     fn colorToHex c = (
         try (
-            "#" + (pad2 (bit.intAsHex c.r)) + (pad2 (bit.intAsHex c.g)) + (pad2 (bit.intAsHex c.b))
+            local cr = c.r, cg = c.g, cb = c.b
+            -- 0-1 浮点（Point3/AColor 常见）→ 转 0-255；0-255 整数原样
+            if cr <= 1.0 and cg <= 1.0 and cb <= 1.0 and cr >= 0 and cg >= 0 and cb >= 0 then (
+                cr = cr * 255.0 ; cg = cg * 255.0 ; cb = cb * 255.0
+            )
+            "#" + (pad2 (bit.intAsHex (cr as integer))) + (pad2 (bit.intAsHex (cg as integer))) + (pad2 (bit.intAsHex (cb as integer)))
         ) catch ( "#000000" )
     )
 
@@ -59,6 +65,22 @@
         local mm = (if t[5] < 10 then "0" + (t[5] as string) else t[5] as string)
         (y + "-" + m + "-" + d + " " + hh + ":" + mm)
     )
+
+    -- 文件安全时间戳（YYYYMMDD_HHMMSS，无冒号/空格，用于备份文件名——避免二次转换覆盖原备份）
+    fn fileStamp = (
+        local t = getLocalTime()
+        ((t[1] as string) + (pad2 (t[2] as string)) + (pad2 (t[3] as string)) + "_" + (pad2 (t[4] as string)) + (pad2 (t[5] as string)) + (pad2 (t[6] as string)))
+    )
+
+    -- 场景基础目录（当前打开工程所在目录，含尾斜杠；未保存场景回退用户脚本目录）——每次实时计算，
+    -- 供导出/烘焙/浏览的默认路径使用，切换工程后自动跟随新工程目录（不用重启脚本）
+    fn sceneBaseDir = (
+        if maxFileName != "" then maxFilePath
+        else ((getDir #userScripts) + "\\")
+    )
+    -- 记录两个面板上次自动设置的默认路径：用户未手动修改时（仍等于该值），按钮点击会刷新为当前工程目录
+    global gLastExportDefault = ""
+    global gLastBakeDefault = ""
 
     -- 清理名称（去掉换行/回车/首尾空白，避免破坏 Markdown）
     fn cleanName s = (
@@ -276,24 +298,12 @@
     fn buildInfos includeObjs includeMaps includeParams = (
         global gExpStage
         gExpStage = "collect"
-        -- [DEBUG] 函数存在性自检：找出哪个引用是 undefined
-        format "[DEBUG] buildInfos 入口：collectAllMaterials=%, buildMatObjectMap=%, cleanName=%, getMatObjects=%, MatInfo=%\n" \
-            (if collectAllMaterials != undefined then "defined" else "UNDEFINED") \
-            (if buildMatObjectMap != undefined then "defined" else "UNDEFINED") \
-            (if cleanName != undefined then "defined" else "UNDEFINED") \
-            (if getMatObjects != undefined then "defined" else "UNDEFINED") \
-            (if MatInfo != undefined then "defined" else "UNDEFINED")
         local mats = collectAllMaterials()
         local objMap = #()
         if includeObjs do (
             gExpStage = "objmap"
-            -- [DEBUG] 调用前再查一次，明确区分「函数未定义」和「函数内部错误」
-            if buildMatObjectMap == undefined then (
-                format "[DEBUG] buildMatObjectMap 为 UNDEFINED！\n"
-                throw "DEBUG: buildMatObjectMap 未定义"
-            ) else (
-                format "[DEBUG] 即将调用 buildMatObjectMap()\n"
-            )
+            -- 防御：函数缺失时明确报错而非对 undefined 调用（历史 bug 定位手段，保留一行兜底）
+            if buildMatObjectMap == undefined do throw "buildMatObjectMap 未定义"
             objMap = buildMatObjectMap()
         )
         local infos = #()
@@ -358,7 +368,9 @@
                     local val
                     try ( val = getProperty m p ) catch ( continue )
                     if val == undefined do continue
-                    if (classof val == Color) then (
+                    -- 颜色值兼容三类（Color / AColor / Point3）：Color 与 AColor 是 isKindOf Color 的兄弟类，
+                    -- 官方文档：AColor 是 Color 的子类，Point3 语义上是 [r,g,b] 也可当颜色。用 isKindOf 兜底。
+                    if (isKindOf val Color) or (classof val == Point3) then (
                         append colors #(pname, (colorToHex val))
                     ) else if (isKindOf val Number) then (
                         append nums #(pname, (val as string))
@@ -512,7 +524,10 @@
     )
 
     -- ===================== 面板一：V-Ray 材质替换 =====================
-    rollout rlVRayReplace "① V-Ray 材质替换" width:340 height:530
+    -- 预声明后续 rollouts：面板一 btnRefresh 事件要跨面板访问 rlBake/rlExport，
+    -- MAXScript 要求被引用名字先声明（否则事件处理器内被隐式声明为局部 undefined → 「未知属性 edtDir 位于 undefined」）
+    local rlBake, rlExport
+    rollout rlVRayReplace "① V-Ray 材质替换" width:340 height:560
     (
         -- 目标材质类型：单选按钮（1=Standard，2=Physical；与旧 dropdownList 的 selection 语义一致）
         radiobuttons rdoTarget "目标材质类型:" labels:#("Standard (标准材质)", "Physical (物理材质)") default:1 columns:1
@@ -523,12 +538,24 @@
         button       btnCount  "仅统计 V-Ray 材质（不替换）" width:310 height:24
         checkbox     chkBackup "转换前自动备份原材质（.mat，可一键恢复）" checked:true
         button       btnRestore "从备份恢复原材质（撤销转换）" width:310 height:24
-        edittext     edtLog    "" width:310 height:212 readOnly:true
+        button       btnRefresh "一键刷新所有路径为当前工程目录" width:310 height:24
+        edittext     edtLog    "" width:310 height:188 readOnly:true
 
         -- 按钮文案联动（P-05）：勾选「统一转换」时按钮/统计按钮文案相应变化
         on chkAll changed v do (
             btnGo.text = if v then "开始统一转换所有材质" else "开始替换 V-Ray 材质"
             btnCount.text = if v then "统计全部材质（不转换）" else "仅统计 V-Ray 材质（不替换）"
+        )
+
+        -- 一键刷新：把面板二（烘焙目录）+ 面板三（导出路径）都重置为当前打开的工程目录。
+        -- 用途：启动 Max 时插件先弹窗（场景未加载），open 事件拿到的默认路径是旧值；
+        --       打开/切换工程后点此按钮立即同步所有地址（事件在点击时执行，此时 rlBake/rlExport 均已定义，可跨面板访问）。
+        on btnRefresh pressed do (
+            gLastBakeDefault = (sceneBaseDir() + "_baked_maps")
+            rlBake.edtDir.text = gLastBakeDefault
+            gLastExportDefault = (sceneBaseDir() + "材质构成报告.md")
+            rlExport.edtPath.text = gLastExportDefault
+            edtLog.text = ("已刷新所有路径为当前工程目录：\n\n" + (if maxFileName != "" then (maxFilePath + maxFileName) else "（未保存场景，回退用户脚本目录）") + "\n\n烘焙目录：\n" + gLastBakeDefault + "\n\n导出路径：\n" + gLastExportDefault)
         )
 
         fn convBitmap m =
@@ -551,7 +578,8 @@
             )
         )
 
-        fn vrMtlToStandard src = (
+        -- 转换函数族统一加 keepMaps 参数（替代直接读 chkMaps.checked），与 UI 解耦
+        fn vrMtlToStandard src keepMaps:true = (
             local r = StandardMaterial()
             r.name = src.name
             try ( r.diffuse = src.diffuse ) catch ()
@@ -563,7 +591,7 @@
             try ( if (hasProperty src "selfIllumination") and src.selfIllumination != (color 0 0 0) do ( r.useSelfIllumColor = true; r.selfIllumColor = src.selfIllumination; r.selfIllumAmount = 100 ) ) catch ()
             -- 透明度：VRay refraction 权重 > 0 时 Standard opacity 相应降低
             try ( if (hasProperty src "refraction") and src.refraction > 0 do r.opacity = (100.0 - (src.refraction * 100.0)) ) catch ()
-            if chkMaps.checked do (
+            if keepMaps do (
                 try ( if (src.texmap_diffuse != undefined and (try (src.texmap_diffuse_on == true) catch true)) do ( r.diffuseMap = convBitmap src.texmap_diffuse; r.diffuseMapEnable = true ) ) catch ()
                 try ( if (src.texmap_bump != undefined and (try (src.texmap_bump_on == true) catch true)) do ( r.bumpMap = convBitmap src.texmap_bump; r.bumpMapEnable = true ) ) catch ()
                 try ( if (src.texmap_opacity != undefined and (try (src.texmap_opacity_on == true) catch true)) do ( r.opacityMap = convBitmap src.texmap_opacity; r.opacityMapEnable = true ) ) catch ()
@@ -571,7 +599,7 @@
             r
         )
 
-        fn vrMtlToPhysical src = (
+        fn vrMtlToPhysical src keepMaps:true = (
             local r = PhysicalMaterial()
             r.name = src.name
             -- 颜色：漫反射
@@ -596,8 +624,14 @@
             try ( if (hasProperty src "selfIllumination_multiplier") do r.emission_level = src.selfIllumination_multiplier ) catch ()
             -- 漫反射粗糙度
             try ( if (hasProperty src "diffuse_roughness") do r.diff_roughness = src.diffuse_roughness ) catch ()
+            -- 补充颜色迁移（Chaos 官方 VRayMtl 颜色属性表：translucency/coat/sheen；Physical 有对应属性）
+            -- 半透明色（SSS）：VRay translucency_color → Physical translucency_color
+            try ( if (hasProperty src "translucency_color") do r.translucency_color = src.translucency_color ) catch ()
+            -- 涂层色：VRay coat_color → Physical coat_color
+            try ( if (hasProperty src "coat_color") do r.coat_color = src.coat_color ) catch ()
+            -- 反射的 IOR 在反射/折射中已覆盖；折射雾色已迁移为 trans_color
             -- 贴图（原有逻辑）
-            if chkMaps.checked do (
+            if keepMaps do (
                 try ( if (hasProperty src "texmap_diffuse") and src.texmap_diffuse != undefined do ( setPhysMap r "base_color" (convBitmap src.texmap_diffuse) ) ) catch ()
                 try ( if (hasProperty src "texmap_reflection") and src.texmap_reflection != undefined do ( setPhysMap r "reflect_color" (convBitmap src.texmap_reflection) ) ) catch ()
                 -- 凹凸贴图：VRay texmap_bump → Physical bump_map（Max 官方博客：physMtl.bump_map = normalBump 用法）
@@ -611,7 +645,7 @@
         --   Standard: diffuse / glossiness(0-100) / specular_level / selfIllumColor / useSelfIllumColor / opacity(0-100) / ior / diffuseMap / bumpMap
         --   Physical: base_color / roughness(0-1) / emission_color / emission_level / transparency(0-1) / ior / base_color_map / bump_map
         --   转换规则：glossiness→roughness = 1-g/100；opacity→transparency = (100-opacity)/100；反向同理。
-        fn stdToPhysical src = (
+        fn stdToPhysical src keepMaps:true = (
             local r = PhysicalMaterial()
             r.name = src.name
             try ( if (hasProperty src "diffuse") do r.base_color = src.diffuse ) catch ()
@@ -619,14 +653,14 @@
             try ( if (hasProperty src "ior") do r.ior = src.ior ) catch ()
             try ( if (hasProperty src "opacity") do r.transparency = ((100.0 - src.opacity) / 100.0) ) catch ()
             try ( if (hasProperty src "selfIllumColor") and src.useSelfIllumColor do ( r.emission_color = src.selfIllumColor; r.emission_level = (try(src.selfIllumAmount)catch(0)) / 100.0 ) ) catch ()
-            if chkMaps.checked do (
+            if keepMaps do (
                 try ( if src.diffuseMap != undefined and src.diffuseMapEnable do ( setPhysMap r "base_color" (convBitmap src.diffuseMap) ) ) catch ()
                 try ( if src.bumpMap != undefined and src.bumpMapEnable do ( setPhysMap r "bump" (convBitmap src.bumpMap) ) ) catch ()
             )
             r
         )
 
-        fn physToStandard src = (
+        fn physToStandard src keepMaps:true = (
             local r = StandardMaterial()
             r.name = src.name
             try ( if (hasProperty src "base_color") do r.diffuse = src.base_color ) catch ()
@@ -634,35 +668,50 @@
             try ( if (hasProperty src "ior") do r.ior = src.ior ) catch ()
             try ( if (hasProperty src "transparency") do r.opacity = ((1.0 - src.transparency) * 100.0) ) catch ()
             try ( if (hasProperty src "emission_color") and src.emission_color != (color 0 0 0) do ( r.useSelfIllumColor = true; r.selfIllumColor = src.emission_color; r.selfIllumAmount = (try(src.emission_level)catch(0)) * 100.0 ) ) catch ()
-            if chkMaps.checked do (
+            if keepMaps do (
                 try ( if src.base_color_map != undefined do ( r.diffuseMap = convBitmap src.base_color_map; r.diffuseMapEnable = true ) ) catch ()
                 try ( if src.bump_map != undefined do ( r.bumpMap = convBitmap src.bump_map; r.bumpMapEnable = true ) ) catch ()
             )
             r
         )
 
-        fn vrLightToStandard src = (
+        fn vrLightToStandard src keepMaps:true = (
             local r = StandardMaterial()
             r.name = src.name
-            try ( if (hasProperty src "color")   do ( r.useSelfIllumColor = true; r.selfIllumColor = src.color; r.selfIllumAmount = 100 ) ) catch ()
+            -- VRayLightMtl 无 diffuse 属性（Chaos 官方：参数只有 Color/Multiplier/Opacity/Texture）。
+            -- 灯光颜色 color 同时迁移为「漫反射色」(diffuse) + 「自发光色」(selfIllumColor)：
+            -- 否则转出的 Standard 漫反射是默认灰 #959595，灯光色值丢失。
+            try ( if (hasProperty src "color")   do (
+                r.useSelfIllumColor = true; r.selfIllumColor = src.color; r.selfIllumAmount = 100
+                r.diffuse = src.color
+            ) ) catch ()
             try ( if (hasProperty src "diffuse") do r.diffuse = src.diffuse ) catch ()
-            if chkMaps.checked do (
-                try ( if (hasProperty src "texmap") and src.texmap != undefined do ( r.selfIllumMap = convBitmap src.texmap; r.selfIllumMapEnable = true ) ) catch ()
+            if keepMaps do (
+                -- texmap = 灯光颜色贴图（Chaos 官方：Texture 槽指定自发光颜色贴图）。
+                -- 转换后同时接到「颜色贴图」(diffuseMap) 和「自发光贴图」(selfIllumMap)：
+                -- diffuse 槽保证任意渲染器（扫描线/物理）下纹理可见，selfIllum 槽保留发光效果。
+                -- 注意先转一次 bm 再复用，避免对同一 VRayBitmap 生成两个实例。
+                try ( if (hasProperty src "texmap") and src.texmap != undefined do (
+                    local bm = convBitmap src.texmap
+                    r.diffuseMap = bm; r.diffuseMapEnable = true
+                    r.selfIllumMap = bm; r.selfIllumMapEnable = true
+                ) ) catch ()
                 try ( if (hasProperty src "texmap_opacity") and src.texmap_opacity != undefined do ( r.opacityMap = convBitmap src.texmap_opacity; r.opacityMapEnable = true ) ) catch ()
             )
             r
         )
 
-        fn vrGenericToStandard src = (
+        fn vrGenericToStandard src keepMaps:true = (
             local r = StandardMaterial()
             r.name = src.name
             try ( if (hasProperty src "diffuse") do r.diffuse = src.diffuse ) catch ()
             try ( if (hasProperty src "color")   do ( r.useSelfIllumColor = true; r.selfIllumColor = src.color; r.selfIllumAmount = 100 ) ) catch ()
-            if chkMaps.checked do try ( if (hasProperty src "texmap_diffuse") and src.texmap_diffuse != undefined do ( r.diffuseMap = convBitmap src.texmap_diffuse; r.diffuseMapEnable = true ) ) catch ()
+            if keepMaps do try ( if (hasProperty src "texmap_diffuse") and src.texmap_diffuse != undefined do ( r.diffuseMap = convBitmap src.texmap_diffuse; r.diffuseMapEnable = true ) ) catch ()
             r
         )
 
-        fn convertMaterial src depth:1 canPhys:false =
+        -- 转换分发核心（与 UI 解耦：UI 状态由 allMode / keepMaps / canPhys 参数传入，不再读控件）
+        fn convertMaterial src depth:1 canPhys:false allMode:false keepMaps:true =
         (
             if src == undefined do return undefined
             if depth > 12 do return (StandardMaterial())
@@ -671,12 +720,12 @@
             if not (matchPattern (classof src as string) pattern:"VRay*") do
             (
                 local rv = src
-                if chkAll.checked do
+                if allMode do
                 (
                     rv = case classof src of
                     (
-                        StandardMaterial: ( if canPhys then (stdToPhysical src) else src )
-                        PhysicalMaterial:  ( if canPhys then src else (physToStandard src) )
+                        StandardMaterial: ( if canPhys then (stdToPhysical src keepMaps:keepMaps) else src )
+                        PhysicalMaterial:  ( if canPhys then src else (physToStandard src keepMaps:keepMaps) )
                         default: src
                     )
                 )
@@ -685,63 +734,75 @@
 
             case classof src of
             (
-                VRayMtl:         ( if (rdoTarget.state == 2 and canPhys) then (vrMtlToPhysical src) else (vrMtlToStandard src) )
-                VRayLightMtl:    ( vrLightToStandard src )
-                VRayMtlWrapper:  ( convertMaterial src.baseMtl  depth:(depth+1) canPhys:canPhys )
-                VRayBlendMtl:    ( convertMaterial src.baseMtl  depth:(depth+1) canPhys:canPhys )
-                VRay2SidedMtl:   ( local fm = convertMaterial src.frontmtl depth:(depth+1) canPhys:canPhys; try ( fm.twoSided = true ) catch (); try ( fm.two_sided = true ) catch (); fm )
-                VRayOverrideMtl: ( convertMaterial src.baseMtl  depth:(depth+1) canPhys:canPhys )
-                VRayFastSSS2:    ( vrGenericToStandard src )
-                default:         ( vrGenericToStandard src )
+                VRayMtl:         ( if canPhys then (vrMtlToPhysical src keepMaps:keepMaps) else (vrMtlToStandard src keepMaps:keepMaps) )
+                VRayLightMtl:    ( vrLightToStandard src keepMaps:keepMaps )
+                VRayMtlWrapper:  ( convertMaterial src.baseMtl  depth:(depth+1) canPhys:canPhys allMode:allMode keepMaps:keepMaps )
+                VRayBlendMtl:    ( convertMaterial src.baseMtl  depth:(depth+1) canPhys:canPhys allMode:allMode keepMaps:keepMaps )
+                VRay2SidedMtl:   ( local fm = convertMaterial src.frontmtl depth:(depth+1) canPhys:canPhys allMode:allMode keepMaps:keepMaps; try ( fm.twoSided = true ) catch (); try ( fm.two_sided = true ) catch (); fm )
+                VRayOverrideMtl: ( convertMaterial src.baseMtl  depth:(depth+1) canPhys:canPhys allMode:allMode keepMaps:keepMaps )
+                VRayFastSSS2:    ( vrGenericToStandard src keepMaps:keepMaps )
+                default:         ( vrGenericToStandard src keepMaps:keepMaps )
             )
         )
 
         on btnGo pressed do
         (
-            local tgt = if (rdoTarget.state == 2 and canPhysical) then #physical else #standard
-            local allMats  = collectAllMaterials()
-            -- 收集待转换材质：勾选「统一转换所有材质」→ 全部；否则仅 VRay*
-            local mats
-            if chkAll.checked then
-                mats = for m in allMats where (matchPattern (classof m as string) pattern:"VRay*" or classof m == StandardMaterial or classof m == PhysicalMaterial) collect m
-            else
-                mats = for m in allMats where matchPattern (classof m as string) pattern:"VRay*" collect m
-            local nMat = mats.count
-            local backupInfo = ""
-            local failCount = 0   -- P-06：统计替换失败的材质数（不静默吞错）
-
-            -- 转换前备份：把场景材质库存成 .mat（官方 saveTempMaterialLibrary，不污染当前材质库）
-            if chkBackup.checked and nMat > 0 do
+            -- P-14：防连点锁——处理中禁用按钮，异常也恢复（避免快速双击触发两次转换/两次备份）
+            if not btnGo.enabled do return false
+            btnGo.enabled = false
+            try
             (
-                local backupPath = (
-                    if maxFileName != "" then (maxFilePath + (getFilenameFile maxFileName) + "_材质备份.mat")
-                    else ((getDir #userScripts) + "\\材质备份.mat")
-                )
-                if (backupSceneMats backupPath) then
-                (
-                    gBackupPath = backupPath
-                    backupInfo = "\n\n已自动备份原材质：\n" + backupPath + "\n（如不满意可点「从备份恢复原材质」一键还原）"
-                )
-                else backupInfo = "\n\n（自动备份失败，请先保存场景再试）"
-            )
+                local tgt = if (rdoTarget.state == 2 and canPhysical) then #physical else #standard
+                local allMats  = collectAllMaterials()
+                -- 收集待转换材质：勾选「统一转换所有材质」→ 全部；否则仅 VRay*
+                local mats
+                if chkAll.checked then
+                    mats = for m in allMats where (matchPattern (classof m as string) pattern:"VRay*" or classof m == StandardMaterial or classof m == PhysicalMaterial) collect m
+                else
+                    mats = for m in allMats where matchPattern (classof m as string) pattern:"VRay*" collect m
+                local nMat = mats.count
+                local backupInfo = ""
+                local failCount = 0   -- P-06：统计替换失败的材质数（不静默吞错）
 
-            undo "Replace V-Ray Materials" on
+                -- 转换前备份：把场景材质库存成 .mat（官方 saveTempMaterialLibrary，不污染当前材质库）
+                if chkBackup.checked and nMat > 0 do
+                (
+                    local backupPath = (
+                        -- P-13：文件名加时间戳，二次转换不覆盖含原始 VRay 材质的旧备份
+                        if maxFileName != "" then (maxFilePath + (getFilenameFile maxFileName) + "_材质备份_" + (fileStamp()) + ".mat")
+                        else ((getDir #userScripts) + "\\材质备份_" + (fileStamp()) + ".mat")
+                    )
+                    if (backupSceneMats backupPath) then
+                    (
+                        gBackupPath = backupPath
+                        backupInfo = "\n\n已自动备份原材质：\n" + backupPath + "\n（如不满意可点「从备份恢复原材质」一键还原）"
+                    )
+                    else backupInfo = "\n\n（自动备份失败，请先保存场景再试）"
+                )
+
+                undo "Replace V-Ray Materials" on
+                (
+                    for m in mats do
+                    (
+                        local nm = convertMaterial m canPhys:(rdoTarget.state == 2 and canPhysical) allMode:chkAll.checked keepMaps:chkMaps.checked
+                        if nm == undefined then ( failCount += 1 )
+                        else try ( replaceInstances m nm ) catch ( failCount += 1 )
+                    )
+
+                    if chkBitmap.checked do
+                    (
+                        try ( for b in (getClassInstances VRayBitmap) do replaceInstances b (convBitmap b) ) catch ()
+                        try ( for h in (getClassInstances VRayHDRI)  do replaceInstances h (convBitmap h) ) catch ()
+                    )
+                )
+
+                edtLog.text = ( "完成。\n\n" + (if chkAll.checked then "已统一转换场景内全部材质：" else "发现 V-Ray 材质：") + nMat as string + " 个\n目标类型：" + (if tgt == #physical then "Physical" else "Standard") + "。\n" + (if failCount > 0 then "⚠ 失败 " + (failCount as string) + " 个（已跳过，见日志）\n" else "") + (if chkBitmap.checked then "\nVRayBitmap / VRayHDRI 已一并转为 Bitmap。" else "") + backupInfo )
+            )
+            catch
             (
-                for m in mats do
-                (
-                    local nm = convertMaterial m canPhys:(rdoTarget.state == 2 and canPhysical)
-                    if nm == undefined then ( failCount += 1 )
-                    else try ( replaceInstances m nm ) catch ( failCount += 1 )
-                )
-
-                if chkBitmap.checked do
-                (
-                    try ( for b in (getClassInstances VRayBitmap) do replaceInstances b (convBitmap b) ) catch ()
-                    try ( for h in (getClassInstances VRayHDRI)  do replaceInstances h (convBitmap h) ) catch ()
-                )
+                edtLog.text = ("转换出错：\n" + (try((getCurrentException()) as string)catch("未知错误")) + "\n\n请把此信息反馈给开发者。")
             )
-
-            edtLog.text = ( "完成。\n\n" + (if chkAll.checked then "已统一转换场景内全部材质：" else "发现 V-Ray 材质：") + nMat as string + " 个\n目标类型：" + (if tgt == #physical then "Physical" else "Standard") + "。\n" + (if failCount > 0 then "⚠ 失败 " + (failCount as string) + " 个（已跳过，见日志）\n" else "") + (if chkBitmap.checked then "\nVRayBitmap / VRayHDRI 已一并转为 Bitmap。" else "") + backupInfo )
+            btnGo.enabled = true
             gc()
         )
 
@@ -773,63 +834,6 @@
         )
     )
 
-    -- ===================== 面板三：导出材质构成 MD =====================
-    rollout rlExport "③ 导出材质构成 MD" width:340 height:510
-    (
-        edittext     edtPath  "输出路径:" text:"" width:250
-        button       btnBrowse "浏览..." width:60 height:21
-        checkbox     chkObjs  "包含「使用对象」列表" checked:true
-        checkbox     chkMaps  "包含「贴图」详情"     checked:true
-        checkbox     chkParams "包含「数值/颜色」参数" checked:true
-        button       btnCopy  "复制 AI 提示词（给 ChatGPT/Claude）" width:310 height:24
-        button       btnGo    "导出材质构成 MD" width:310 height:36
-        edittext     edtLog   "" width:310 height:240 readOnly:true
-
-        local defaultPath = (
-            if maxFileName != "" then (maxFilePath + "材质构成报告.md")
-            else ((getDir #userScripts) + "\\材质构成报告.md")
-        )
-        on rlExport open do ( edtPath.text = defaultPath )
-
-        on btnBrowse pressed do (
-            local p = getSaveFileName caption:"保存材质构成报告" types:"Markdown (*.md)|*.md|All Files (*.*)|*.*" fileName:defaultPath
-            if p != undefined do edtPath.text = p
-        )
-
-        on btnCopy pressed do (
-            try (
-                (dotNetClass "System.Windows.Forms.Clipboard").SetText aiPrompt
-                edtLog.text = "AI 提示词已复制到剪贴板，直接粘贴给 ChatGPT / Claude 即可。"
-            ) catch (
-                edtLog.text = "提示词复制到剪贴板失败，可直接从导出 MD 的开头复制：\n\n" + aiPrompt
-            )
-        )
-
-
-        on btnGo pressed do
-        (
-            local p = edtPath.text
-            if p == "" or p == undefined do p = defaultPath
-            if p == "" or p == undefined do ( messageBox "请先设置输出路径。" title:"提示"; return false )
-            try
-            (
-                exportDoc p chkObjs.checked chkMaps.checked chkParams.checked
-                edtLog.text = "已导出：\n" + p
-                -- 打开所在文件夹，方便查看
-                try ( ShellLaunch (getFilenamePath p) "" ) catch ()
-            )
-            catch
-            (
-                local errMsg = try ( getExceptionMessage() ) catch ( try ( (getCurrentException()) as string ) catch ( "未知错误" ) )
-                local stage = try ( gExpStage as string ) catch ( "(无阶段信息)" )
-                -- [DEBUG] 完整异常文本 + 调用栈（3ds Max 2017+ 支持 getCurrentExceptionStackTrace）
-                local fullExc = try ( (getCurrentException()) as string ) catch ( "(无 getCurrentException)" )
-                local stackTrace = try ( getCurrentExceptionStackTrace() ) catch ( "(无调用栈可用)" )
-                format "[EXPORT ERROR] stage=%\n  msg=%\n  fullExc=%\n  stack=%\n" stage errMsg fullExc stackTrace
-                edtLog.text = ("导出失败 @ " + stage + "：\n" + errMsg + "\n\n--- 完整异常 ---\n" + fullExc + "\n\n--- 调用栈 ---\n" + stackTrace + "\n\n（请检查输出路径是否可写，建议先保存到本机磁盘）")
-            )
-        )
-    )
 
     -- ===================== 面板二：程序贴图烘焙（FBX 导出兼容） =====================
     rollout rlBake "② 程序贴图烘焙（FBX 兼容）" width:340 height:320
@@ -841,21 +845,25 @@
         button       btnGo    "烘焙程序贴图" width:310 height:36
         edittext     edtLog   "" width:310 height:140 readOnly:true
 
-        local defaultDir = (
-            if maxFileName != "" then (maxFilePath + "_baked_maps")
-            else ((getDir #userScripts) + "\\_baked_maps")
+        -- 默认输出目录：跟随当前打开的工程（open/btnGo 时实时计算，切换工程自动跟随）
+        on rlBake open do (
+            gLastBakeDefault = (sceneBaseDir() + "_baked_maps")
+            edtDir.text = gLastBakeDefault
         )
-        on rlBake open do ( edtDir.text = defaultDir )
 
         on btnBrowse pressed do (
-            local d = getSavePath caption:"选择烘焙输出目录" initialDir:(getFilenamePath defaultDir)
+            local d = getSavePath caption:"选择烘焙输出目录" initialDir:(sceneBaseDir())
             if d != undefined do edtDir.text = d
         )
 
         on btnGo pressed do
         (
             local dir = edtDir.text
-            if dir == "" or dir == undefined do dir = defaultDir
+            -- 跟随工程目录：输入为空或仍是上次自动默认值（用户未手动改）→ 刷新为当前工程目录
+            if dir == undefined or dir == "" or dir == gLastBakeDefault do (
+                dir = (sceneBaseDir() + "_baked_maps")
+                edtDir.text = dir
+            )
             -- 确保输出目录存在
             if not (doesDirectoryExist dir) do (
                 try ( makeDir dir all:true ) catch ()
@@ -901,6 +909,67 @@
         )
     )
 
+    -- ===================== 面板三：导出材质构成 MD =====================
+    rollout rlExport "③ 导出材质构成 MD" width:340 height:510
+    (
+        edittext     edtPath  "输出路径:" text:"" width:250
+        button       btnBrowse "浏览..." width:60 height:21
+        checkbox     chkObjs  "包含「使用对象」列表" checked:true
+        checkbox     chkMaps  "包含「贴图」详情"     checked:true
+        checkbox     chkParams "包含「数值/颜色」参数" checked:true
+        button       btnCopy  "复制 AI 提示词（给 ChatGPT/Claude）" width:310 height:24
+        button       btnGo    "导出材质构成 MD" width:310 height:36
+        edittext     edtLog   "" width:310 height:240 readOnly:true
+
+        -- 默认导出路径：跟随当前打开的工程（open/btnGo 时实时计算，切换工程自动跟随）
+        on rlExport open do (
+            gLastExportDefault = (sceneBaseDir() + "材质构成报告.md")
+            edtPath.text = gLastExportDefault
+        )
+
+        on btnBrowse pressed do (
+            local p = getSaveFileName caption:"保存材质构成报告" types:"Markdown (*.md)|*.md|All Files (*.*)|*.*" fileName:(sceneBaseDir() + "材质构成报告.md")
+            if p != undefined do edtPath.text = p
+        )
+
+        on btnCopy pressed do (
+            try (
+                (dotNetClass "System.Windows.Forms.Clipboard").SetText aiPrompt
+                edtLog.text = "AI 提示词已复制到剪贴板，直接粘贴给 ChatGPT / Claude 即可。"
+            ) catch (
+                edtLog.text = "提示词复制到剪贴板失败，可直接从导出 MD 的开头复制：\n\n" + aiPrompt
+            )
+        )
+
+
+        on btnGo pressed do
+        (
+            local p = edtPath.text
+            -- 跟随工程目录：输入为空或仍是上次自动默认值（用户未手动改）→ 刷新为当前工程目录
+            if p == undefined or p == "" or p == gLastExportDefault do (
+                p = (sceneBaseDir() + "材质构成报告.md")
+                edtPath.text = p
+            )
+            if p == "" or p == undefined do ( messageBox "请先设置输出路径。" title:"提示"; return false )
+            try
+            (
+                exportDoc p chkObjs.checked chkMaps.checked chkParams.checked
+                edtLog.text = "已导出：\n" + p
+                -- 打开所在文件夹，方便查看
+                try ( ShellLaunch (getFilenamePath p) "" ) catch ()
+            )
+            catch
+            (
+                local errMsg = try ( getExceptionMessage() ) catch ( try ( (getCurrentException()) as string ) catch ( "未知错误" ) )
+                local stage = try ( gExpStage as string ) catch ( "(无阶段信息)" )
+                -- [DEBUG] 完整异常文本 + 调用栈（3ds Max 2017+ 支持 getCurrentExceptionStackTrace）
+                local fullExc = try ( (getCurrentException()) as string ) catch ( "(无 getCurrentException)" )
+                local stackTrace = try ( getCurrentExceptionStackTrace() ) catch ( "(无调用栈可用)" )
+                format "[EXPORT ERROR] stage=%\n  msg=%\n  fullExc=%\n  stack=%\n" stage errMsg fullExc stackTrace
+                edtLog.text = ("导出失败 @ " + stage + "：\n" + errMsg + "\n\n--- 完整异常 ---\n" + fullExc + "\n\n--- 调用栈 ---\n" + stackTrace + "\n\n（请检查输出路径是否可写，建议先保存到本机磁盘）")
+            )
+        )
+    )
     -- ===================== 主窗口 =====================
     try ( destroyDialog matToolkit ) catch ()
     matToolkit = newRolloutFloater "材质工具箱 v3" 360 860
