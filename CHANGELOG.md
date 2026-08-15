@@ -5,6 +5,23 @@
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-08-15
+
+### 新增
+- **一键刷新路径**：面板一新增「一键刷新所有路径为当前工程目录」按钮，同步刷新面板二（烘焙目录 `_baked_maps`）+ 面板三（导出路径 `材质构成报告.md`）并显示当前工程
+- **默认目录跟随当前工程**：新增顶层 `sceneBaseDir()` 动态计算当前工程目录（`maxFilePath`，未保存场景回退用户脚本目录）；面板打开与按钮点击时若输入未手动修改则自动跟随新工程
+- **灯光材质色值/贴图双接**（VRayLightMtl → Standard）：`texmap` 贴图同时接 `diffuseMap` + `selfIllumMap`；灯光颜色 `color` 同时接 `diffuse` + `selfIllumColor`——保证任意渲染器下纹理与色值都可见
+- **色值收集完整化**：`colorToHex` 兼容 MAXScript 三类颜色值（Color / AColor / Point3）与 0-1 浮点颜色（自动 ×255），导出报告不再漏 AColor/Point3 类型颜色属性
+
+### 修复
+- **P-13**：备份文件名固定导致二次转换覆盖含原始 VRay 材质的旧备份 → 文件名加时间戳（新增 `fileStamp()`，YYYYMMDD_HHMMSS）
+- **P-14**：btnGo 快速双击触发两次转换/两次备份 → 防连点锁（处理中禁用按钮，`try/catch` 保证异常也恢复）
+- **VRayLightMtl 漫反射色值丢失**：该材质无 `diffuse` 属性（Chaos 官方参数表确认），原逻辑 `hasProperty "diffuse"` 永远 false 导致漫反射落回默认灰 #959595 → `color` 双接漫反射+自发光
+- **btnRefresh 跨 rollout 访问报错**：「未知属性 edtDir 位于 undefined」——rollout 事件引用后定义的 rollout 会被隐式声明为局部 undefined → 面板一前预声明 `local rlBake, rlExport`
+- **转换核心与 UI 解耦**：`convertMaterial` 增 `allMode/keepMaps` 参数，6 个转换函数族增 `keepMaps:true` 默认参数，内部不再读 UI 控件（可脱离 UI 复用）
+- 清理 `buildInfos` 入口的 [DEBUG] 自检输出（保留防御 throw 与 catch 分支调用栈）
+- rollout 定义顺序对齐展示顺序（①替换 → ②烘焙 → ③导出）
+
 ## [3.2.0] - 2026-08-15
 
 ### 新增
@@ -45,6 +62,7 @@
 - 多维子材质递归处理、`replaceInstances` 全局替换
 - 「复制 AI 提示词」按钮
 
+[3.3.0]: https://github.com/Simiely/vray-material-replacer/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/Simiely/vray-material-replacer/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/Simiely/vray-material-replacer/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/Simiely/vray-material-replacer/releases/tag/v3.0.0
