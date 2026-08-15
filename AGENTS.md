@@ -1,6 +1,6 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-08-15（commit `165cf4d`）完成四件套（README / AGENTS / DEVELOPMENT / CHANGELOG）重写
+> 📌 **文档基线**：2026-08-15（commit 待推送后回填）3.3.0：路径跟随工程 + 一键刷新 + 灯光色值/贴图双接 + 模块化解耦
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
 
 ## 技术栈
@@ -14,10 +14,14 @@
 - **想当然的函数名必炸**：`bit.char` 不存在（用 `bit.intAsChar 13/10`）；`trim` 不存在（用 `trimLeft`/`trimRight`）；`->` 不存在（用 `=`）
 - **核心接口不要实例化**：`SceneConverter.OverwriteFromMaterialLibrary path`（直接点号调用，`SceneConverter()` 是解析期语法错误）
 - **路径变量**：`maxFileName` 只含文件名，路径用 `maxFilePath`（含尾斜杠）；完整 = `maxFilePath + maxFileName`
+- **跨 rollout 访问必须先预声明 local**：rollout A 的事件引用后定义的 rollout B，B 会被隐式声明为局部 undefined（报「未知属性 xxx 位于 undefined」）；在 A 定义前写 `local rlB, rlC` 预声明（Autodesk 官方推荐模式）
+- **默认路径必须动态计算**：rollout 定义时求值的 `local defaultPath` 在 Startup 加载瞬间定死（场景未加载）；用顶层 `sceneBaseDir()` 每次实时读 `maxFilePath`，open/btnGo 时再取
+- **VRayLightMtl 没有 `diffuse` 属性**：参数只有 Color/Multiplier/Opacity/Texture；转换到 Standard 时灯光颜色 `color` 要**双接**（diffuse + selfIllumColor），贴图 `texmap` 也双接（diffuseMap + selfIllumMap）
 - **Physical 贴图槽名跨版本漂移**：`base_color_map` / `base_color_map_map` 两种都试（`setPhysMap` 已封装）
 - **BitmapTexture 无 `enabled` 属性**：报告读取启用状态要反查材质槽位属性（`<slot>MapEnable` / `<slot>_map_enabled`）
 - **`for...where...` 嵌套过滤**：内层 where 引用外层循环变量会 undefined，统一用朴素 `for + if`
 - **程序贴图收集必须防环**：`collectProcMaps` 入栈前检查 `findItem seen`，否则循环贴图树死循环
+- **颜色值有三类**：`Color` / `AColor` / `Point3`，判断用 `isKindOf val Color or classof val == Point3`；`colorToHex` 兼容 0-1 浮点（×255）
 
 ## 约定
 - UI 标签用中文；注释用中文；单文件交付；`try/catch` 兜底所有属性访问
