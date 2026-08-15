@@ -52,7 +52,7 @@
 - 官方内置函数，按名字设属性，跨版本稳妥。本脚本 `setPhysMap` 用它替代非法的 `obj.(expr)=val`。
 
 ### 1.7 官方场景 API
-- `getClassInstances <class>`、`replaceInstances <old> <new>`、`getNumSubMtls`/`getSubMtl`/`getNumSubTexmaps`/`getSubTexmap`/`getSubTexmapSlotName`、`getPropNames`、`isKindOf`、`matchPattern <str> pattern:"VRay*"`、`bit.char <n>`、`substring`、`findItem`/`append`/`join` 等，均为文档化 MAXScript 构造，合法。
+- `getClassInstances <class>`、`replaceInstances <old> <new>`、`getNumSubMtls`/`getSubMtl`/`getNumSubTexmaps`/`getSubTexmap`/`getSubTexmapSlotName`、`getPropNames`、`isKindOf`、`matchPattern <str> pattern:"VRay*"`、`bit.intAsChar <n>`（**注意：`bit.char` 不存在！** 清换行须用 `bit.intAsChar 13`/`bit.intAsChar 10`，早期记录误写为 `bit.char`，已修正）、`substring`、`findItem`/`append`/`join` 等，均为文档化 MAXScript 构造，合法。
 - **关键限制**（本次运行时错误的根因）：`getClassInstances <class>` 的 `<class>` 必须是**具体 MAXClass**（如 `VRayBitmap`、`StandardMaterial`），**不接受抽象基类 `Material`**——`Material` 拿到的是基类值而非 max class，会报 `类型错误:getClassInstances 需要 MXClass，得到的是:material`。要收集「场景里所有材质」必须用遍历（见第 2.4 节），不能用 `getClassInstances Material`。
 
 ### 1.8 .NET 互操作
@@ -179,7 +179,7 @@
 | 编译硬错 | 硬错-1 `setProperty`（H1 前身） | ✅ 已推送 `0bb9c145d23e` |
 | 编译硬错 | 硬错-2 删嵌套 fn，改用 `ss +=` | ✅ 已推送 `c5e62e8f7a9e` |
 | 编译硬错 | 硬错-3 去掉 `->` 箭头 | ✅ 随硬错-2 一并修复 |
-| 健壮性（已推） | H1 `cleanName` 用 `bit.char` 清换行 | ✅ `0bb9c145d23e` |
+| 健壮性（已推） | H1 `cleanName` 清换行（**原记录误写 `bit.char`，实际应 `bit.intAsChar 13/10`；`bit.char` 不存在，会导致「未知属性 char」/「调用需要函数或类，得到的是 undefined」**） | ✅ 已修正 |
 | 健壮性（已推） | H2 类比较改字符串 | ✅ `0bb9c145d23e` |
 | 健壮性（已推） | H3 Physical 贴图显式启用 | ✅ `0bb9c145d23e` |
 | 功能（已推） | M1 `VRay2SidedMtl` 设 `twoSided` | ✅ `0bb9c145d23e` |
