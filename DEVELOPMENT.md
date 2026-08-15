@@ -21,18 +21,18 @@
 
 ## 2. 架构说明
 
-单文件 911 行（2026-08-15），按注释分区：
+单文件 980 行（2026-08-15 v3.3.0），按注释分区：
 
 | 区段 | 行号（约） | 职责 |
 |---|---|---|
-| 共享工具函数 | 24-110 | `pad2`/`colorToHex`/`mapFilename`/`nowStr`/`cleanName`/`joinStr`/`recurseMats`/`collectAllMaterials`/`buildMatObjectMap`/`getMatObjects`（顶层块，彼此可见） |
-| 材质备份/恢复 | 167-188 | `backupSceneMats`（saveTempMaterialLibrary sceneMaterials）/ `restoreSceneMats`（SceneConverter.OverwriteFromMaterialLibrary）+ `global gBackupPath` |
-| 程序贴图烘焙 | 190-264 | `collectProcMaps`（防环收集）/ `bakeMapToFile` / `bakeAndReplace` / `bakeOnly`（renderMap API） |
-| 导出三阶段 | 266-494 | `buildInfos`（收集 MatInfo 数组）/ `renderMD`（拼 MD 字符串）/ `writeMDFile`（写盘）/ `exportDoc`（薄协调层） |
-| 面板一：材质替换 | 496-748 | `rdoTarget` 单选 / `chkMaps` / `chkBitmap` / `chkAll`（统一转换）/ `chkBackup` / `btnGo` / `btnCount` / `btnRestore`；`convBitmap` / `setPhysMap` / `vrMtlToStandard` / `vrMtlToPhysical` / `stdToPhysical` / `physToStandard` / `vrLightToStandard` / `vrGenericToStandard` / `convertMaterial` |
-| 面板三：导出 MD | 750-806 | `edtPath` / `chkObjs` / `chkMaps` / `chkParams` / `btnCopy` / `btnGo`（catch 输出完整异常+调用栈） |
-| 面板二：程序贴图烘焙 | 808-876 | `edtDir` / `ddlSize` / `chkReplace` / `btnGo` |
-| 主窗口 | 878-884 | `newRolloutFloater`，addRollout 顺序 ①替换→②烘焙→③导出 |
+| 共享工具函数 | 24-123 | `pad2`/`colorToHex`（兼容 Color/AColor/Point3+浮点）/`mapFilename`/`nowStr`/`fileStamp`（备份时间戳）/`sceneBaseDir`（实时工程目录）/`cleanName`/`joinStr`/`recurseMats`/`collectAllMaterials`/`buildMatObjectMap`/`getMatObjects` + `gLastExportDefault`/`gLastBakeDefault`（默认路径跟踪） |
+| 材质备份/恢复 | 190-208 | `backupSceneMats`（saveTempMaterialLibrary sceneMaterials）/ `restoreSceneMats`（SceneConverter.OverwriteFromMaterialLibrary）+ `global gBackupPath` |
+| 程序贴图烘焙 | 212-289 | `collectProcMaps`（防环收集）/ `bakeMapToFile` / `bakeAndReplace` / `bakeOnly`（renderMap API） |
+| 导出三阶段 | 294-540 | `buildInfos`（收集 MatInfo 数组）/ `renderMD`（拼 MD 字符串）/ `writeMDFile`（写盘）/ `exportDoc`（薄协调层） |
+| 面板一：材质替换 | 530-820 | `rdoTarget` 单选 / `chkMaps` / `chkBitmap` / `chkAll`（统一转换）/ `chkBackup` / `btnGo`（防连点锁）/ `btnCount` / `btnRestore` / `btnRefresh`（一键刷新路径，跨面板访问 rlBake/rlExport）；`convBitmap` / `setPhysMap` / `vrMtlToStandard` / `vrMtlToPhysical` / `stdToPhysical` / `physToStandard` / `vrLightToStandard`（色值/贴图双接）/ `vrGenericToStandard` / `convertMaterial`（allMode/keepMaps 参数，与 UI 解耦） |
+| 面板二：程序贴图烘焙 | 839-893 | `edtDir` / `ddlSize` / `chkReplace` / `btnGo`；目录跟随工程（sceneBaseDir） |
+| 面板三：导出 MD | 913-960 | `edtPath` / `chkObjs` / `chkMaps` / `chkParams` / `btnCopy` / `btnGo`（catch 输出完整异常+调用栈）；路径跟随工程 |
+| 主窗口 | 973-980 | `newRolloutFloater`，addRollout 顺序 ①替换→②烘焙→③导出（与定义顺序一致） |
 
 **核心设计原则**（规避 MAXScript 无闭包限制）：
 - 所有跨函数数据一律**参数/返回值传递**，不共享局部变量
@@ -123,6 +123,33 @@
 - 根因：collectAllMaterials 收集到非材质对象（9 个 undefined 的数组）
 - 解决：`if props == undefined do props = #()` 防御
 - 预防：第三方对象遍历前确认返回值
+
+### 问题：跨 rollout 访问必须先预声明 local
+
+**TL;DR**：rollout A 的事件处理器引用**定义在 A 之后**的 rollout B，B 会被隐式声明为局部 undefined → 报「未知属性 xxx 位于 undefined」。
+
+- 问题：面板一 `btnRefresh` 事件访问 `rlBake.edtDir` 报「未知属性 edtDir 位于 undefined」
+- 根因：MAXScript 事件处理器引用外部名字时，若该名字在 rollout 定义时未声明，会被绑定为局部 undefined（官方《Visibility of Locals in Rollout Code》：只能引用已定义的 rollout/函数）
+- 解决：在面板一 rollout 定义前 `local rlBake, rlExport` 预声明（官方推荐模式：pre-declare uninitialized locals），后续 rollout 定义会赋值给该 local
+- 预防：**任何跨 rollout 访问，先在最外层预声明目标 rollout 名**；不要依赖"事件运行时已定义"
+
+### 问题：VRayLightMtl 没有 diffuse 属性（灯光色值双接）
+
+**TL;DR**：VRayLightMtl 参数只有 Color/Multiplier/Opacity/Texture（Chaos 官方），`hasProperty "diffuse"` 永远 false → 转 Standard 后漫反射落回默认灰 #959595。
+
+- 问题：转换后灯光材质 Diffuse 全是默认灰，灯光颜色丢失（报告实证：3 个 VRayLightMtl 全部异常，而 151 个 VRayMtl→Physical 色值全对）
+- 根因：`if (hasProperty src "diffuse") do r.diffuse = src.diffuse` 对 VRayLightMtl 永不生效
+- 解决：`color` **双接**——`r.diffuse = src.color` + `r.selfIllumColor = src.color`；`texmap` 同理双接 `diffuseMap` + `selfIllumMap`（先 `convBitmap` 一次复用 bm）
+- 预防：灯光材质 = 无 diffuse 的发光材质，色值/贴图都要双接（漫反射兜底 + 自发光保效果）
+
+### 问题：默认路径必须动态计算（不能 rollout 定义时求值）
+
+**TL;DR**：rollout 定义时的 `local defaultPath` 在脚本加载瞬间求值（Startup 加载时场景未加载 → `maxFileName` 空 → 路径定死），之后切换工程不跟随。
+
+- 问题：启动 Max 直接打开工程，插件默认路径还是旧值（回退目录）；重跑脚本（场景已加载）才正确
+- 根因：`on open` 事件只在 rollout 首次显示触发一次，且 `defaultPath` 求值早于场景加载
+- 解决：顶层 `fn sceneBaseDir` 每次实时读 `maxFilePath`（含尾斜杠，未保存回退 `getDir #userScripts + "\\"`）；open/btnGo 时再取；配 `gLastExportDefault`/`gLastBakeDefault` 跟踪"上次自动默认值"，按钮点击时若输入未手动改（等于该值）则刷新为当前工程目录
+- 预防：**所有默认路径用函数动态计算，不缓存静态值**；用户手动改过的输入要尊重
 
 ---
 
