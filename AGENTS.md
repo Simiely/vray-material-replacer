@@ -1,6 +1,6 @@
 # AGENTS.md · 项目规则
 
-> 📌 **文档基线**：2026-08-15（commit `e8b3e6e`）3.3.0：路径跟随工程 + 一键刷新 + 灯光色值/贴图双接 + 模块化解耦
+> 📌 **文档基线**：2026-11-18（commit `__SHA__`）接入 repo-kit 机器层（link-only / 规范 2.1.4）；前序 2026-08-15 3.3.0 路径跟随工程
 > **更新文档/代码后，请更新此行**（日期 + 新 commit hash），并在 CHANGELOG 追加版本
 
 ## 技术栈
@@ -27,6 +27,13 @@
 - UI 标签用中文；注释用中文；单文件交付；`try/catch` 兜底所有属性访问
 - 3ds Max 启动脚本只在启动时加载一次，改代码后需重启 Max 才生效
 - 本机工作副本：`D:\workbuddy\2026-08-14-22-01-24\vray-material-replacer\`（开发）+ Startup 目录（安装副本，改完同步）
+
+## 机器层（repo-kit · link-only）
+
+- `schema/taxonomy.json` + `schema/kit.lock.json`（kit `2.9.0` / 规范 `2.1.4` / `link-only`）+ `tools/repo-kit/check_repo.py`
+- 校验：`python tools/repo-kit/check_repo.py --root .`；锁哈希：`pwsh tools/update-repo-kit.ps1 -Check`
+- 只查**链接与锚点**：全仓 md 豁免 frontmatter（本仓没有 frontmatter 契约）
+- `schema/kit.lock.json` **不要手改**，升级只能跑 `tools/update-repo-kit.ps1`
 
 ## 常用命令
 - 手动运行：MAXScript → 新建脚本 → 打开 `.ms` → Ctrl+E；或直接拖进视口

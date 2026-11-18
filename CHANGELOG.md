@@ -5,6 +5,10 @@
 
 ## [Unreleased]
 
+### Changed
+- 2026-11-18 · 文档维护：接入 repo-kit 机器层（link-only）：接入 repo-kit 机器层（link-only，kit `2.9.0` / 规范 `2.1.4`）
+- `examples/材质构成报告_示例.md` 的 5 处 TOC 锚点改为行内代码：`#mat-1` 等是给 HTML 转换器的 id 约定，不是 GitHub 标题锚点
+
 ## [3.3.0] - 2026-08-15
 
 ### 新增
